@@ -16,6 +16,7 @@ NC='\033[0m'
 PROJECT_DIR="/home/joy/src/pico_src/midi"
 BUILD_DIR="$PROJECT_DIR/build"
 FIRMWARE="$BUILD_DIR/src/midi.uf2"
+PICOTOOL="/home/joy/src/pico/picotool/build/picotool"
 
 # Parse arguments
 COMPILE_ONLY=false
@@ -104,26 +105,36 @@ flash_firmware() {
     fi
     
     # Check for picotool
-    if command -v picotool &> /dev/null; then
-        print_info "Usando picotool..."
+    if [[ -x "$PICOTOOL" ]]; then
+        print_info "Usando picotool local..."
         
         # Check if Pico is in BOOTSEL
         if lsusb | grep -q "2e8a:0003"; then
             print_step "Pico en modo BOOTSEL detectado"
-            picotool load "$FIRMWARE" -f
+            $PICOTOOL load "$FIRMWARE" -f
             print_step "Firmware cargado con picotool"
         else
             print_info "Reiniciando Pico en modo BOOTSEL..."
-            picotool reboot -u
+            $PICOTOOL reboot -u
             sleep 3
             
             if lsusb | grep -q "2e8a:0003"; then
-                picotool load "$FIRMWARE" -f
+                $PICOTOOL load "$FIRMWARE" -f
                 print_step "Firmware cargado con picotool"
             else
                 print_error "No se pudo reiniciar el Pico"
                 exit 1
             fi
+        fi
+    elif command -v picotool &> /dev/null; then
+        print_info "Usando picotool del sistema..."
+        
+        if lsusb | grep -q "2e8a:0003"; then
+            picotool load "$FIRMWARE" -f
+        else
+            picotool reboot -u
+            sleep 3
+            picotool load "$FIRMWARE" -f
         fi
     else
         print_info "Usando copia manual..."
