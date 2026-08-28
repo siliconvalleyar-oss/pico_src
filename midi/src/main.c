@@ -4,17 +4,17 @@
  * Reads analog touch pads on ADC pins (GPIO 26, 27, 28) and converts
  * touch/no-touch into MIDI Note On/Off messages sent over USB.
  *
+ * Features:
+ *   - Multiple musical scales (Major, Minor, Pentatonic, Blues, etc.)
+ *   - Octave shifting with button or MIDI
+ *   - Velocity sensitivity from ADC pressure
+ *   - Control Change messages for continuous control
+ *
  * Hardware:
- *   - Touch pad on GPIO 26 (ADC0) -> MIDI Note C4 (60)
- *   - Touch pad on GPIO 27 (ADC1) -> MIDI Note D4 (62)
- *   - Touch pad on GPIO 28 (ADC2) -> MIDI Note E4 (64)
- *   - Optional: internal temperature sensor as pad 4 -> MIDI Note G4 (67)
- *
- * Touch detection: Each pad reads its ADC voltage. When a finger touches
- * the pad (conductive to GND through the body), the voltage drops below
- * the threshold. You can also use capacitive touch circuits.
- *
- * Velocity is derived from the ADC value (lower voltage = harder touch = louder).
+ *   - Touch pad on GPIO 26 (ADC0) -> Pad 1
+ *   - Touch pad on GPIO 27 (ADC1) -> Pad 2
+ *   - Touch pad on GPIO 28 (ADC2) -> Pad 3
+ *   - Optional: internal temperature sensor as pad 4
  *
  * SPDX-License-Identifier: MIT
  */
@@ -27,42 +27,186 @@
 #include "tusb.h"
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
+#include "hardware/gpio.h"
 
-//--------------------------------------------------------------------+
-// Configuration
-//--------------------------------------------------------------------+
+//====================================================================+
+// CONFIGURATION
+//====================================================================+
 
 // Number of touch pad channels
-#define NUM_PADS        4
+#define NUM_PADS            3   // Using 3 external pads (GPIO 26-28)
 
-// ADC pins for touch pads (GPIO 26=ADC0, 27=ADC1, 28=ADC2)
-// Pad 3 uses the internal temperature sensor (ADC4)
+// ADC pins for touch pads
 static const uint8_t adc_pins[NUM_PADS] = { 26, 27, 28 };
 
-// MIDI note numbers mapped to each pad
-// Using notes from C major scale: C4, D4, E4, G4
-static const uint8_t midi_notes[NUM_PADS] = { 60, 62, 64, 67 };
+// ADC channel mapping
+static const uint8_t adc_channels[NUM_PADS] = { 0, 1, 2 };
 
-// ADC threshold: values below this are considered "touched"
-// ADC is 12-bit (0-4095). Adjust based on your touch pad circuit.
-// Typical resting value is ~2048 (mid-rail), touch pulls toward 0.
+// Button to change scale (GPIO 15 - optional)
+#define SCALE_BUTTON_PIN    15
+#define SCALE_BUTTON_PULL   true
+
+// ADC threshold
 #define TOUCH_THRESHOLD     1500
-
-// Minimum velocity (so even light touches are audible)
 #define MIN_VELOCITY        30
-
-// Maximum velocity
 #define MAX_VELOCITY        127
-
-// Debounce: how many consecutive readings before changing state
 #define DEBOUNCE_COUNT      3
-
-// Scan interval in milliseconds
 #define SCAN_INTERVAL_MS    10
 
-//--------------------------------------------------------------------+
-// Blink pattern
-//--------------------------------------------------------------------+
+//====================================================================+
+// MUSICAL SCALES
+//====================================================================+
+
+// Scale definitions (intervals from root note)
+// Each scale has 7 notes (one per degree of the scale)
+// We use the first 3 notes for our 3 pads
+
+typedef struct {
+    const char *name;
+    uint8_t intervals[7];   // Semitone intervals from root
+    uint8_t num_notes;      // Number of notes in scale
+} scale_t;
+
+// Major scale: W-W-H-W-W-W-H (2-2-1-2-2-2-1)
+static const scale_t SCALE_MAJOR = {
+    .name = "Major",
+    .intervals = { 0, 2, 4, 5, 7, 9, 11 },
+    .num_notes = 7
+};
+
+// Natural Minor scale: W-H-W-W-H-W-W (2-1-2-2-1-2-2)
+static const scale_t SCALE_MINOR = {
+    .name = "Minor",
+    .intervals = { 0, 2, 3, 5, 7, 8, 10 },
+    .num_notes = 7
+};
+
+// Harmonic Minor: W-H-W-W-H-WH-H (2-1-2-2-1-3-1)
+static const scale_t SCALE_HARMONIC_MINOR = {
+    .name = "Harmonic Minor",
+    .intervals = { 0, 2, 3, 5, 7, 8, 11 },
+    .num_notes = 7
+};
+
+// Pentatonic Major: 5 notes (no 4th or 7th)
+static const scale_t SCALE_PENTATONIC_MAJOR = {
+    .name = "Pentatonic Major",
+    .intervals = { 0, 2, 4, 7, 9 },
+    .num_notes = 5
+};
+
+// Pentatonic Minor: 5 notes
+static const scale_t SCALE_PENTATONIC_MINOR = {
+    .name = "Pentatonic Minor",
+    .intervals = { 0, 3, 5, 7, 10 },
+    .num_notes = 5
+};
+
+// Blues scale: Minor pentatonic + b5
+static const scale_t SCALE_BLUES = {
+    .name = "Blues",
+    .intervals = { 0, 3, 5, 6, 7, 10 },
+    .num_notes = 6
+};
+
+// Dorian mode: like minor but with raised 6th
+static const scale_t SCALE_DORIAN = {
+    .name = "Dorian",
+    .intervals = { 0, 2, 3, 5, 7, 9, 10 },
+    .num_notes = 7
+};
+
+// Mixolydian mode: like major but with lowered 7th
+static const scale_t SCALE_MIXOLYDIAN = {
+    .name = "Mixolydian",
+    .intervals = { 0, 2, 4, 5, 7, 9, 10 },
+    .num_notes = 7
+};
+
+// Chromatic: all 12 semitones
+static const scale_t SCALE_CHROMATIC = {
+    .name = "Chromatic",
+    .intervals = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 },
+    .num_notes = 12
+};
+
+// Whole tone: 6 notes
+static const scale_t SCALE_WHOLE_TONE = {
+    .name = "Whole Tone",
+    .intervals = { 0, 2, 4, 6, 8, 10 },
+    .num_notes = 6
+};
+
+// Diminished: alternating whole/half steps
+static const scale_t SCALE_DIMINISHED = {
+    .name = "Diminished",
+    .intervals = { 0, 2, 3, 5, 6, 8, 9, 11 },
+    .num_notes = 8
+};
+
+// Japanese (In-Sen): traditional Japanese scale
+static const scale_t SCALE_JAPANESE = {
+    .name = "Japanese",
+    .intervals = { 0, 1, 5, 7, 8 },
+    .num_notes = 5
+};
+
+// Arabic (Hijaz): Middle Eastern sound
+static const scale_t SCALE_ARABIC = {
+    .name = "Arabic",
+    .intervals = { 0, 1, 4, 5, 7, 8, 11 },
+    .num_notes = 7
+};
+
+// Indian (Bhairav): Indian classical
+static const scale_t SCALE_INDIAN = {
+    .name = "Indian",
+    .intervals = { 0, 1, 4, 5, 7, 8, 11 },
+    .num_notes = 7
+};
+
+// All scales array
+#define NUM_SCALES  14
+static const scale_t *scales[NUM_SCALES] = {
+    &SCALE_MAJOR,
+    &SCALE_MINOR,
+    &SCALE_HARMONIC_MINOR,
+    &SCALE_PENTATONIC_MAJOR,
+    &SCALE_PENTATONIC_MINOR,
+    &SCALE_BLUES,
+    &SCALE_DORIAN,
+    &SCALE_MIXOLYDIAN,
+    &SCALE_CHROMATIC,
+    &SCALE_WHOLE_TONE,
+    &SCALE_DIMINISHED,
+    &SCALE_JAPANESE,
+    &SCALE_ARABIC,
+    &SCALE_INDIAN
+};
+
+//====================================================================+
+// STATE VARIABLES
+//====================================================================+
+
+// Current scale index
+static uint8_t current_scale = 0;
+
+// Current root note (MIDI note number)
+// C4 = 60, D4 = 62, E4 = 64, etc.
+static uint8_t root_note = 60;  // C4
+
+// Octave offset (0 = middle octave, -1 = lower, +1 = higher)
+static int8_t octave_offset = 0;
+
+// Current notes for pads (calculated from scale)
+static uint8_t pad_notes[NUM_PADS];
+
+// Button state for scale change
+static bool last_button_state = false;
+
+//====================================================================+
+// BLINK PATTERN
+//====================================================================+
 
 enum {
     BLINK_NOT_MOUNTED = 250,
@@ -72,42 +216,98 @@ enum {
 
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
-//--------------------------------------------------------------------+
-// Touch pad state
-//--------------------------------------------------------------------+
+//====================================================================+
+// TOUCH PAD STATE
+//====================================================================+
 
 typedef struct {
-    bool     is_touched;      // current debounced state
-    uint8_t  debounce_cnt;    // debounce counter
-    uint8_t  velocity;        // MIDI velocity
-    uint16_t raw_value;       // last raw ADC value
+    bool     is_touched;
+    uint8_t  debounce_cnt;
+    uint8_t  velocity;
+    uint16_t raw_value;
 } pad_state_t;
 
 static pad_state_t pads[NUM_PADS];
 
-//--------------------------------------------------------------------+
-// Prototypes
-//--------------------------------------------------------------------+
+//====================================================================+
+// PROTOTYPES
+//====================================================================+
 
 void led_blinking_task(void);
 void midi_task(void);
 void adc_init_pads(void);
 void scan_pads(void);
+void update_pad_notes(void);
+void check_scale_button(void);
 void send_midi_note_on(uint8_t channel, uint8_t note, uint8_t velocity);
 void send_midi_note_off(uint8_t channel, uint8_t note);
 void send_midi_cc(uint8_t channel, uint8_t cc, uint8_t value);
 
-//--------------------------------------------------------------------+
-// ADC initialization
-//--------------------------------------------------------------------+
+//====================================================================+
+// SCALE FUNCTIONS
+//====================================================================+
+
+// Calculate pad notes from current scale
+void update_pad_notes(void) {
+    const scale_t *scale = scales[current_scale];
+    
+    for (int i = 0; i < NUM_PADS; i++) {
+        if (i < scale->num_notes) {
+            // Use notes from the scale
+            pad_notes[i] = root_note + scale->intervals[i] + (octave_offset * 12);
+        } else {
+            // If we have more pads than scale notes, wrap around
+            uint8_t idx = i % scale->num_notes;
+            uint8_t octave_up = i / scale->num_notes;
+            pad_notes[i] = root_note + scale->intervals[idx] + 
+                           (octave_offset * 12) + (octave_up * 12);
+        }
+        
+        // Ensure note is in valid MIDI range (0-127)
+        if (pad_notes[i] > 127) pad_notes[i] = 127;
+    }
+}
+
+// Check button to change scale
+void check_scale_button(void) {
+    bool button_pressed = !gpio_get(SCALE_BUTTON_PIN);  // Active low with pull-up
+    
+    // Detect button press (falling edge)
+    if (button_pressed && !last_button_state) {
+        // Change to next scale
+        current_scale = (current_scale + 1) % NUM_SCALES;
+        update_pad_notes();
+        
+        // Flash LED to indicate scale change
+        for (int i = 0; i <= current_scale; i++) {
+            board_led_write(true);
+            sleep_ms(100);
+            board_led_write(false);
+            sleep_ms(100);
+        }
+    }
+    
+    last_button_state = button_pressed;
+}
+
+//====================================================================+
+// ADC INITIALIZATION
+//====================================================================+
 
 void adc_init_pads(void) {
     adc_init();
 
-    // Initialize GPIO pins for ADC (they must be set to input, no pull)
+    // Initialize GPIO pins for ADC
     adc_gpio_init(26);
     adc_gpio_init(27);
     adc_gpio_init(28);
+    
+    // Initialize scale button
+    gpio_init(SCALE_BUTTON_PIN);
+    gpio_set_dir(SCALE_BUTTON_PIN, GPIO_IN);
+    if (SCALE_BUTTON_PULL) {
+        gpio_pull_up(SCALE_BUTTON_PIN);
+    }
 
     // Initialize pad states
     for (int i = 0; i < NUM_PADS; i++) {
@@ -116,33 +316,28 @@ void adc_init_pads(void) {
         pads[i].velocity = 0;
         pads[i].raw_value = 0;
     }
+    
+    // Calculate initial pad notes
+    update_pad_notes();
 }
 
-//--------------------------------------------------------------------+
-// Pad scanning and debouncing
-//--------------------------------------------------------------------+
+//====================================================================+
+// PAD SCANNING
+//====================================================================+
 
 void scan_pads(void) {
     for (int i = 0; i < NUM_PADS; i++) {
         // Select ADC input
-        if (i < 3) {
-            // ADC channels 0, 1, 2 on GPIO 26, 27, 28
-            adc_select_input(i);
-        } else {
-            // Channel 4 = internal temperature sensor (not a touch pad)
-            // Skip or use as a bonus sensor
-            adc_select_input(4);
-        }
+        adc_select_input(adc_channels[i]);
 
         // Read ADC (12-bit value, 0-4095)
         uint16_t raw = adc_read();
         pads[i].raw_value = raw;
 
-        // Determine if touched (voltage dropped below threshold)
+        // Determine if touched
         bool currently_touched = (raw < TOUCH_THRESHOLD);
 
-        // Calculate velocity from ADC reading
-        // Lower voltage = more touch = higher velocity
+        // Calculate velocity
         if (currently_touched) {
             uint16_t range = TOUCH_THRESHOLD;
             uint16_t inverted = TOUCH_THRESHOLD - raw;
@@ -160,12 +355,12 @@ void scan_pads(void) {
             if (pads[i].debounce_cnt >= DEBOUNCE_COUNT && !pads[i].is_touched) {
                 // Pad just touched -> send Note On
                 pads[i].is_touched = true;
-                send_midi_note_on(0, midi_notes[i], pads[i].velocity);
-                // Also send CC with velocity value for expressiveness
-                send_midi_cc(0, midi_notes[i] + 32, pads[i].velocity);
+                send_midi_note_on(0, pad_notes[i], pads[i].velocity);
+                // Send CC with velocity
+                send_midi_cc(0, pad_notes[i] + 32, pads[i].velocity);
             } else if (pads[i].is_touched) {
                 // Pad is still touched -> send CC with current pressure
-                send_midi_cc(0, midi_notes[i] + 32, pads[i].velocity);
+                send_midi_cc(0, pad_notes[i] + 32, pads[i].velocity);
             }
         } else {
             if (pads[i].debounce_cnt > 0) {
@@ -174,15 +369,15 @@ void scan_pads(void) {
             if (pads[i].debounce_cnt == 0 && pads[i].is_touched) {
                 // Pad just released -> send Note Off
                 pads[i].is_touched = false;
-                send_midi_note_off(0, midi_notes[i]);
+                send_midi_note_off(0, pad_notes[i]);
             }
         }
     }
 }
 
-//--------------------------------------------------------------------+
-// MIDI helpers
-//--------------------------------------------------------------------+
+//====================================================================+
+// MIDI HELPERS
+//====================================================================+
 
 void send_midi_note_on(uint8_t channel, uint8_t note, uint8_t velocity) {
     uint8_t const cable_num = 0;
@@ -202,9 +397,9 @@ void send_midi_cc(uint8_t channel, uint8_t cc, uint8_t value) {
     tud_midi_stream_write(cable_num, cc_msg, 3);
 }
 
-//--------------------------------------------------------------------+
+//====================================================================+
 // MAIN
-//--------------------------------------------------------------------+
+//====================================================================+
 
 int main(void) {
     board_init();
@@ -223,19 +418,17 @@ int main(void) {
     // Initialize ADC for touch pads
     adc_init_pads();
 
-    // Optional: init stdio for debugging (uses USB CDC if enabled)
-    // stdio_init_all();
-
     while (1) {
-        tud_task();       // TinyUSB device task
+        tud_task();
         led_blinking_task();
         midi_task();
+        check_scale_button();
     }
 }
 
-//--------------------------------------------------------------------+
-// Device callbacks
-//--------------------------------------------------------------------+
+//====================================================================+
+// DEVICE CALLBACKS
+//====================================================================+
 
 void tud_mount_cb(void) {
     blink_interval_ms = BLINK_MOUNTED;
@@ -254,29 +447,48 @@ void tud_resume_cb(void) {
     blink_interval_ms = tud_mounted() ? BLINK_MOUNTED : BLINK_NOT_MOUNTED;
 }
 
-//--------------------------------------------------------------------+
-// MIDI Task
-//--------------------------------------------------------------------+
+//====================================================================+
+// MIDI TASK
+//====================================================================+
 
 void midi_task(void) {
     static uint32_t start_ms = 0;
 
-    // Drain any incoming MIDI (we don't process it, but must read it)
+    // Drain incoming MIDI
     while (tud_midi_available()) {
         uint8_t packet[4];
         tud_midi_packet_read(packet);
+        
+        // Parse incoming MIDI for scale/root changes
+        if (packet[0] == 0x90 && packet[2] > 0) {
+            // Note On received - could use to change root note
+            // packet[1] = note number
+        }
+        else if (packet[0] == 0xB0) {
+            // CC received
+            // CC 14 = change scale
+            // CC 15 = change octave
+            if (packet[1] == 14) {
+                current_scale = packet[2] % NUM_SCALES;
+                update_pad_notes();
+            }
+            else if (packet[1] == 15) {
+                octave_offset = (int8_t)(packet[2] / 21) - 3;  // Map 0-127 to -3 to +3
+                update_pad_notes();
+            }
+        }
     }
 
-    // Scan pads at configured interval
+    // Scan pads
     if (board_millis() - start_ms < SCAN_INTERVAL_MS) return;
     start_ms += SCAN_INTERVAL_MS;
 
     scan_pads();
 }
 
-//--------------------------------------------------------------------+
-// LED Blinking Task
-//--------------------------------------------------------------------+
+//====================================================================+
+// LED BLINKING TASK
+//====================================================================+
 
 void led_blinking_task(void) {
     static uint32_t start_ms = 0;
