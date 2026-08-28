@@ -169,10 +169,10 @@ def main():
             
             while True:
                 try:
-                msg = port.receive(timeout=1.0)
-            except TypeError:
-                # Fallback for older mido versions
-                msg = port.receive()
+                    msg = port.receive(timeout=1.0)
+                except TypeError:
+                    # Fallback for older mido versions
+                    msg = port.receive()
                 
                 if msg is not None:
                     msg_count += 1
