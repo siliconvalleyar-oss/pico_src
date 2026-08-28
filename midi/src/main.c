@@ -46,12 +46,13 @@ static const uint8_t adc_channels[NUM_PADS] = { 0, 1, 2 };
 #define SCALE_BUTTON_PIN    15
 #define SCALE_BUTTON_PULL   true
 
-// ADC threshold
-#define TOUCH_THRESHOLD     1500
-#define MIN_VELOCITY        30
+// ADC threshold - AJUSTADO PARA MAYOR SENSIBILIDAD
+// ADC es 12-bit (0-4095). Sin toque: ~4095. Con toque: baja.
+#define TOUCH_THRESHOLD     3500    // Detecta toques más ligeros
+#define MIN_VELOCITY        20      // Velocity mínima más baja
 #define MAX_VELOCITY        127
-#define DEBOUNCE_COUNT      3
-#define SCAN_INTERVAL_MS    10
+#define DEBOUNCE_COUNT      2       // Respuesta más rápida
+#define SCAN_INTERVAL_MS    5       // Escaneo más rápido
 
 //====================================================================+
 // MUSICAL SCALES
@@ -322,7 +323,7 @@ void adc_init_pads(void) {
 }
 
 //====================================================================+
-// PAD SCANNING
+// PAD SCANNING - ALTA SENSIBILIDAD
 //====================================================================+
 
 void scan_pads(void) {
@@ -331,23 +332,28 @@ void scan_pads(void) {
         adc_select_input(adc_channels[i]);
 
         // Read ADC (12-bit value, 0-4095)
+        // Sin toque: ~4095 (3.3V)
+        // Con toque: baja hacia 0
         uint16_t raw = adc_read();
         pads[i].raw_value = raw;
 
-        // Determine if touched
+        // Determine if touched - más sensible
+        // Si el valor baja del umbral, hay toque
         bool currently_touched = (raw < TOUCH_THRESHOLD);
 
-        // Calculate velocity
+        // Calculate velocity - mejor escala
         if (currently_touched) {
-            uint16_t range = TOUCH_THRESHOLD;
-            uint16_t inverted = TOUCH_THRESHOLD - raw;
-            uint8_t vel = (uint8_t)((uint32_t)inverted * MAX_VELOCITY / range);
+            // Calcular velocity basado en cuánto bajó
+            // raw: 0 (toque fuerte) a TOUCH_THRESHOLD (toque ligero)
+            uint32_t drop = TOUCH_THRESHOLD - raw;
+            uint32_t vel = (drop * MAX_VELOCITY) / TOUCH_THRESHOLD;
+            
             if (vel < MIN_VELOCITY) vel = MIN_VELOCITY;
             if (vel > MAX_VELOCITY) vel = MAX_VELOCITY;
-            pads[i].velocity = vel;
+            pads[i].velocity = (uint8_t)vel;
         }
 
-        // Debounce logic
+        // Debounce logic - más rápido
         if (currently_touched) {
             if (pads[i].debounce_cnt < DEBOUNCE_COUNT) {
                 pads[i].debounce_cnt++;
