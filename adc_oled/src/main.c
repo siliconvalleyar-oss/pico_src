@@ -2,10 +2,10 @@
  * ADC + OLED SSD1306 - Raspberry Pi Pico RP2040
  *
  * Osciloscopio digital con KY-037.
- * - Izquierda: trazo ADC tipo osciloscopio (128 muestras = 500ms)
- * - Derecha arriba: estado DO (HIGH/LOW)
- * - Izquierda arriba: tension ADC promedio
- * - Deteccion de picos/trigger automatica
+ * - Izquierda arriba: voltaje ADC promedio
+ * - Derecha arriba: indicador digital DO (cuadrado vacío/lleno)
+ * - Abajo: trazo tipo osciloscopio, 2 segundos de ventana
+ * - Trigger automático por pico de señal
  * - USB CDC para debug
  *
  * Hardware:
@@ -54,20 +54,22 @@
 #define SSD1306_WIDTH      128
 #define SSD1306_I2C_ADDR   0x3C
 
-// Timebase: 128 samples across 64 pixels = 500ms window
-#define DISPLAY_UPDATE_MS  300     // Refresh display every 300ms
-#define SAMPLE_INTERVAL_MS 4       // ~250 Hz sample rate (128 * 4ms = 512ms)
+// Timebase: 128 samples = 2 seconds window
+#define SAMPLE_INTERVAL_MS 15      // ~64 Hz (128 * 15ms = 1.92s ≈ 2s)
+#define DISPLAY_UPDATE_MS  200     // Refresh display every 200ms
 #define SERIAL_UPDATE_MS   500     // Serial debug every 500ms
 
 // Trigger configuration
 #define PEAK_THRESHOLD     150     // Minimum ADC rise to detect peak
 #define NOISE_FLOOR        80      // Ignore fluctuations below this
-#define TRIGGER_HOLD_MS    200     // Block retrigger for this time
+#define TRIGGER_HOLD_MS    500     // Block retrigger for 500ms
 
-// Oscilloscope buffer: 128 samples = 500ms window
+// Oscilloscope buffer
 #define SCOPE_BUFFER_SIZE  128
 static uint16_t scope_buffer[SCOPE_BUFFER_SIZE];
 static uint8_t scope_index = 0;
+static bool scope_triggered = false;
+static uint32_t last_trigger_ms = 0;
 
 //====================================================================+
 // SSD1306 DRIVER (from pico-examples)
@@ -223,6 +225,38 @@ static void DrawLine(uint8_t *buf, int x0, int y0, int x1, int y1, bool on) {
     }
 }
 
+static void DrawCircle(uint8_t *buf, int x0, int y0, int radius, bool filled) {
+    int x = radius;
+    int y = 0;
+    int err = 0;
+
+    while (x >= y) {
+        if (filled) {
+            DrawLine(buf, x0 - x, y0 + y, x0 + x, y0 + y, true);
+            DrawLine(buf, x0 - y, y0 + x, x0 + y, y0 + x, true);
+            DrawLine(buf, x0 - x, y0 - y, x0 + x, y0 - y, true);
+            DrawLine(buf, x0 - y, y0 - x, x0 + y, y0 - x, true);
+        } else {
+            SetPixel(buf, x0 + x, y0 + y, true);
+            SetPixel(buf, x0 + y, y0 + x, true);
+            SetPixel(buf, x0 - y, y0 + x, true);
+            SetPixel(buf, x0 - x, y0 + y, true);
+            SetPixel(buf, x0 - x, y0 - y, true);
+            SetPixel(buf, x0 - y, y0 - x, true);
+            SetPixel(buf, x0 + y, y0 - x, true);
+            SetPixel(buf, x0 + x, y0 - y, true);
+        }
+
+        y += 1;
+        if (err <= 0) {
+            err += 2 * y + 1;
+            continue;
+        }
+        x -= 1;
+        err += 2 * (y - x) + 1;
+    }
+}
+
 static inline int GetFontIndex(uint8_t ch) {
     if (ch >= 'A' && ch <= 'Z') return ch - 'A' + 1;
     else if (ch >= '0' && ch <= '9') return ch - '0' + 27;
@@ -282,14 +316,10 @@ static uint16_t adc_average = 0;
 static uint16_t last_adc_value = 0;
 static bool last_do_state = false;
 static uint16_t noise_floor = 0;
-static bool trigger_armed = true;
-static uint16_t trigger_level = 2000;
-static bool trigger_fired = false;
-static uint32_t last_trigger_ms = 0;
 
 //====================================================================+
 // ADC FUNCTIONS
-//=====================================================================
+//====================================================================+
 
 static void adc_init_sensor(void) {
     adc_init();
@@ -305,18 +335,16 @@ static void adc_sample(void) {
     current_adc_value = raw;
     current_voltage = (raw * ADC_VREF) / ADC_RESOLUTION;
 
-    // Running average for display
     adc_sum += raw;
     adc_samples++;
 
-    // Push into oscilloscope buffer
     scope_buffer[scope_index] = raw;
     scope_index = (scope_index + 1) % SCOPE_BUFFER_SIZE;
 }
 
 //====================================================================+
-// TRIGGER / PEAK DETECTION
-//=====================================================================
+// TRIGGER DETECTION
+//====================================================================+
 
 static bool detect_trigger(uint32_t now) {
     uint16_t delta = 0;
@@ -410,7 +438,7 @@ int main(void) {
         tud_task();
         uint32_t now = board_millis();
 
-        // Sample ADC at fixed interval (~250 Hz)
+        // Sample ADC at fixed interval (~64 Hz)
         if (now - last_sample_ms >= SAMPLE_INTERVAL_MS) {
             last_sample_ms = now;
 
@@ -427,6 +455,10 @@ int main(void) {
             // Trigger detection
             bool trigger = detect_trigger(now);
             if (trigger) {
+                memset(scope_buffer, 0, sizeof(scope_buffer));
+                scope_index = 0;
+                scope_triggered = true;
+
                 char event_buf[128];
                 snprintf(event_buf, sizeof(event_buf),
                     "[TRIGGER] PEAK +%u | ADC=%4u | V=%0.2fV | DO=%s\r\n",
@@ -458,7 +490,7 @@ int main(void) {
             }
         }
 
-        // Update display every 300ms
+        // Update display every 200ms
         if (now - last_display_ms >= DISPLAY_UPDATE_MS) {
             last_display_ms = now;
             memset(buf, 0, SSD1306_BUF_LEN);
@@ -471,73 +503,60 @@ int main(void) {
             } else {
                 char line[32];
 
-                // Title
-                WriteString(buf, 0, 0, "KY-037 OSC");
-
-                // Average ADC voltage (left top)
+                // Title / ADC voltage (top left)
                 if (adc_samples > 0) {
                     adc_average = (uint16_t)(adc_sum / adc_samples);
                 }
-                snprintf(line, sizeof(line), "AVG:%4u", adc_average);
-                WriteString(buf, 0, 8, line);
-
                 snprintf(line, sizeof(line), "V:%0.2fV", (adc_average * ADC_VREF) / ADC_RESOLUTION);
-                WriteString(buf, 0, 16, line);
+                WriteString(buf, 0, 0, line);
 
-                // DO state (right top)
-                snprintf(line, sizeof(line), "DO:%s", ky037_digital_state ? "HIGH" : "LOW ");
-                WriteString(buf, 80, 0, line);
-
-                // Oscilloscope trace: 64 pixels wide, 500ms window
-                uint8_t trace_x = 0;
-                uint8_t trace_y = 28;
-                uint8_t trace_h = 32;
-
-                // Trace baseline
-                for (uint8_t x = 0; x < 64; x++) {
-                    SetPixel(buf, trace_x + x, trace_y + trace_h - 1, true);
-                }
-
-                // Draw waveform from buffer
-                for (uint8_t x = 0; x < 64; x++) {
-                    uint8_t idx = (scope_index + x) % SCOPE_BUFFER_SIZE;
-                    uint16_t val = scope_buffer[idx];
-                    uint8_t y = trace_y + trace_h - ((val * trace_h) / 4095);
-                    if (y < trace_y) y = trace_y;
-                    if (y >= trace_y + trace_h) y = trace_y + trace_h - 1;
-                    SetPixel(buf, trace_x + x, y, true);
-                }
-
-                // Vertical separator
-                for (uint8_t y = 0; y < SSD1306_HEIGHT; y++) {
-                    SetPixel(buf, 64, y, true);
-                }
-
-                // Right side: digital state big
+                // DO indicator (top right): empty square for LOW, filled for HIGH
                 if (ky037_digital_state) {
-                    WriteString(buf, 72, 20, "HIGH");
+                    DrawCircle(buf, 120, 4, 4, true);
                 } else {
-                    WriteString(buf, 72, 20, "LOW");
+                    DrawCircle(buf, 120, 4, 4, false);
                 }
 
-                // Right side: trigger indicator
-                if (trigger_fired) {
-                    WriteString(buf, 72, 40, "TRIG");
-                } else {
-                    WriteString(buf, 72, 40, "    ");
+                // Divider line
+                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
+                    SetPixel(buf, x, 15, true);
                 }
 
-                // Right side: sample counter bar
-                uint8_t bar_x = 120;
-                uint8_t level_h = (current_adc_value * trace_h) / 4095;
-                for (uint8_t y = 0; y < level_h && y < trace_h; y++) {
-                    SetPixel(buf, bar_x, trace_y + trace_h - 1 - y, true);
+                // Oscilloscope area: y=16..63 (48 pixels high), x=0..127 (128 pixels wide)
+                uint8_t trace_y = 16;
+                uint8_t trace_h = 48;
+
+                // Baseline
+                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
+                    SetPixel(buf, x, trace_y + trace_h - 1, true);
+                }
+
+                // Draw waveform
+                if (scope_triggered && scope_index < SCOPE_BUFFER_SIZE) {
+                    // Post-trigger: show filled samples from left
+                    for (uint8_t i = 0; i < scope_index && i < SSD1306_WIDTH; i++) {
+                        uint16_t val = scope_buffer[i];
+                        uint8_t y = trace_y + trace_h - ((val * trace_h) / 4095);
+                        if (y < trace_y) y = trace_y;
+                        if (y >= trace_y + trace_h) y = trace_y + trace_h - 1;
+                        SetPixel(buf, i, y, true);
+                    }
+                } else {
+                    // Rolling buffer: show last 128 samples across 128 pixels
+                    for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
+                        uint8_t idx = (scope_index + x) % SCOPE_BUFFER_SIZE;
+                        uint16_t val = scope_buffer[idx];
+                        uint8_t y = trace_y + trace_h - ((val * trace_h) / 4095);
+                        if (y < trace_y) y = trace_y;
+                        if (y >= trace_y + trace_h) y = trace_y + trace_h - 1;
+                        SetPixel(buf, x, y, true);
+                    }
                 }
             }
 
             render(buf, &frame_area);
 
-            // Reset average accumulator after display update
+            // Reset average accumulator
             adc_sum = 0;
             adc_samples = 0;
         }
