@@ -1,0 +1,25 @@
+# Build output
+build/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Compiled objects
+*.o
+*.d
+*.elf
+*.map
+*.bin
+*.hex
+*.uf2
+*.dis
+
+# picotool downloaded binaries
+_deps/
+
+# OS files
+.DS_Store
+Thumbs.db
