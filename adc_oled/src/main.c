@@ -1,22 +1,18 @@
 /*
  * ADC + OLED SSD1306 - Raspberry Pi Pico RP2040
  *
- * Lee el nivel de sonido desde un módulo KY-037 conectado al ADC (GPIO 27)
- * y muestra el valor en tiempo real en una pantalla OLED SSD1306 128x64
- * conectada por I2C. También muestra el estado digital del KY-037.
- * Envía datos de debug por USB CDC (Virtual Serial).
- *
- * Basado en el ejemplo oficial: pico-examples/i2c/ssd1306_i2c
+ * Osciloscopio digital con KY-037.
+ * - Izquierda: trazo ADC tipo osciloscopio (128 muestras = 500ms)
+ * - Derecha arriba: estado DO (HIGH/LOW)
+ * - Izquierda arriba: tension ADC promedio
+ * - Deteccion de picos/trigger automatica
+ * - USB CDC para debug
  *
  * Hardware:
- *   - Módulo KY-037 (sensor de sonido):
- *     - AO (salida analógica) → GPIO 27 (ADC1)
- *     - DO (salida digital)   → GPIO 26 (entrada digital)
- *   - OLED SSD1306:
- *     - SDA → GPIO 16 (I2C0)
- *     - SCL → GPIO 17 (I2C0)
- *   - Alimentación: 3.3V y GND del Pico
- *   - USB: Conexión USB para datos serial (CDC)
+ *   - KY-037 AO -> GPIO 27 (ADC1)
+ *   - KY-037 DO -> GPIO 26
+ *   - OLED SDA  -> GPIO 16
+ *   - OLED SCL  -> GPIO 17
  *
  * SPDX-License-Identifier: MIT
  */
@@ -38,16 +34,16 @@
 // CONFIGURATION
 //====================================================================+
 
-// ADC Configuration (KY-037 analog output)
+// ADC Configuration
 #define ADC_PIN            27      // GPIO 27 (ADC1) - KY-037 AO
 #define ADC_CHANNEL        1       // ADC channel 1
 #define ADC_VREF           3.3f    // Reference voltage
 #define ADC_RESOLUTION     4095.0f // 12-bit ADC
 
-// Digital input (KY-037 digital output)
+// Digital input
 #define KY037_DO_PIN       26      // GPIO 26 - KY-037 DO
 
-// I2C Configuration for SSD1306
+// I2C Configuration
 #define I2C_PORT           i2c0
 #define I2C_SDA_PIN        16      // GPIO 16 (I2C0 SDA)
 #define I2C_SCL_PIN        17      // GPIO 17 (I2C0 SCL)
@@ -58,25 +54,24 @@
 #define SSD1306_WIDTH      128
 #define SSD1306_I2C_ADDR   0x3C
 
-// Display refresh interval
-#define DISPLAY_UPDATE_MS  300     // Update every 300ms (~3.3 FPS)
+// Timebase: 128 samples across 64 pixels = 500ms window
+#define DISPLAY_UPDATE_MS  300     // Refresh display every 300ms
+#define SAMPLE_INTERVAL_MS 4       // ~250 Hz sample rate (128 * 4ms = 512ms)
+#define SERIAL_UPDATE_MS   500     // Serial debug every 500ms
 
-// Serial debug interval
-#define SERIAL_UPDATE_MS   500     // Send debug data every 500ms (2 Hz)
+// Trigger configuration
+#define PEAK_THRESHOLD     150     // Minimum ADC rise to detect peak
+#define NOISE_FLOOR        80      // Ignore fluctuations below this
+#define TRIGGER_HOLD_MS    200     // Block retrigger for this time
 
-// Peak detection threshold
-#define PEAK_THRESHOLD     200     // Minimum ADC increase to count as peak
-#define NOISE_FLOOR        100     // Ignore changes smaller than this
-
-// ADC averaging
-#define ADC_SAMPLES_AVG    16      // Number of ADC samples to average
-
-// Firmware version
-#define FIRMWARE_VERSION   "v1.1"
+// Oscilloscope buffer: 128 samples = 500ms window
+#define SCOPE_BUFFER_SIZE  128
+static uint16_t scope_buffer[SCOPE_BUFFER_SIZE];
+static uint8_t scope_index = 0;
 
 //====================================================================+
 // SSD1306 DRIVER (from pico-examples)
-//=====================================================================
+//====================================================================+
 
 #define SSD1306_SET_MEM_MODE        _u(0x20)
 #define SSD1306_SET_COL_ADDR        _u(0x21)
@@ -273,26 +268,28 @@ static void cdc_send_string(const char *str) {
 
 //====================================================================+
 // GLOBAL VARIABLES
-//=====================================================================
+//====================================================================+
 
 static uint16_t current_adc_value = 0;
 static float current_voltage = 0.0f;
 static bool ky037_digital_state = false;
 static bool oled_ok = false;
 
-// Peak detection state
+// Oscilloscope state
+static uint16_t adc_sum = 0;
+static uint16_t adc_samples = 0;
+static uint16_t adc_average = 0;
 static uint16_t last_adc_value = 0;
 static bool last_do_state = false;
 static uint16_t noise_floor = 0;
-
-// ECG buffer for display
-#define ECG_BUFFER_SIZE   128
-static uint16_t ecg_buffer[ECG_BUFFER_SIZE];
-static uint8_t ecg_index = 0;
+static bool trigger_armed = true;
+static uint16_t trigger_level = 2000;
+static bool trigger_fired = false;
+static uint32_t last_trigger_ms = 0;
 
 //====================================================================+
 // ADC FUNCTIONS
-//====================================================================+
+//=====================================================================
 
 static void adc_init_sensor(void) {
     adc_init();
@@ -302,15 +299,40 @@ static void adc_init_sensor(void) {
     gpio_set_dir(KY037_DO_PIN, GPIO_IN);
 }
 
-static void adc_read_sensor(void) {
-    uint32_t sum = 0;
-    for (uint8_t i = 0; i < ADC_SAMPLES_AVG; i++) {
-        adc_select_input(ADC_CHANNEL);
-        sum += adc_read();
-    }
-    uint16_t raw = (uint16_t)(sum / ADC_SAMPLES_AVG);
+static void adc_sample(void) {
+    adc_select_input(ADC_CHANNEL);
+    uint16_t raw = adc_read();
     current_adc_value = raw;
     current_voltage = (raw * ADC_VREF) / ADC_RESOLUTION;
+
+    // Running average for display
+    adc_sum += raw;
+    adc_samples++;
+
+    // Push into oscilloscope buffer
+    scope_buffer[scope_index] = raw;
+    scope_index = (scope_index + 1) % SCOPE_BUFFER_SIZE;
+}
+
+//====================================================================+
+// TRIGGER / PEAK DETECTION
+//=====================================================================
+
+static bool detect_trigger(uint32_t now) {
+    uint16_t delta = 0;
+    if (current_adc_value > last_adc_value) {
+        delta = current_adc_value - last_adc_value;
+    }
+
+    bool peak = (delta > PEAK_THRESHOLD) && (delta > noise_floor);
+    bool armed = (now - last_trigger_ms) > TRIGGER_HOLD_MS;
+
+    if (peak && armed) {
+        last_trigger_ms = now;
+        return true;
+    }
+
+    return false;
 }
 
 //====================================================================+
@@ -320,28 +342,24 @@ static void adc_read_sensor(void) {
 int main(void) {
     stdio_init_all();
 
-    // Initialize USB CDC first
     cdc_init();
     sleep_ms(500);
 
     cdc_send_string("\r\n");
     cdc_send_string("========================================\r\n");
-    cdc_send_string("  ADC + OLED + KY-037\r\n");
+    cdc_send_string("  KY-037 Oscilloscope\r\n");
     cdc_send_string("  Raspberry Pi Pico RP2040\r\n");
     cdc_send_string("========================================\r\n");
 
-    // Initialize ADC and digital input for KY-037
     adc_init_sensor();
     cdc_send_string("[ADC] KY-037 AO=GP27, DO=GP26 initialized\r\n");
 
-    // Initialize I2C0 on GPIO 16/17 for OLED
     i2c_init(I2C_PORT, I2C_BAUDRATE);
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_SDA_PIN);
     gpio_pull_up(I2C_SCL_PIN);
 
-    // Scan for OLED
     bool found = false;
     for (uint8_t addr = 0x3C; addr <= 0x3D; addr++) {
         uint8_t buf[1] = {0x00};
@@ -359,11 +377,9 @@ int main(void) {
         cdc_send_string("[OLED] Device not found at 0x3C or 0x3D\r\n");
     }
 
-    // Initialize OLED display
     SSD1306_init();
     oled_ok = found;
 
-    // Initialize render area for entire frame
     struct render_area frame_area = {
         .start_col = 0,
         .end_col = SSD1306_WIDTH - 1,
@@ -372,95 +388,79 @@ int main(void) {
     };
     calc_render_area_buflen(&frame_area);
 
-    // Zero the entire display buffer
     uint8_t buf[SSD1306_BUF_LEN];
     memset(buf, 0, SSD1306_BUF_LEN);
 
-    // Show firmware version on OLED
     if (oled_ok) {
-        WriteString(buf, 0, 0, "ADC+OLED+KY037");
-        WriteString(buf, 0, 8, "Firmware:");
-        WriteString(buf, 40, 16, FIRMWARE_VERSION);
-        WriteString(buf, 0, 32, "Iniciando...");
+        WriteString(buf, 0, 0, "KY-037 OSC");
+        WriteString(buf, 0, 8, "Iniciando...");
         render(buf, &frame_area);
-        sleep_ms(1500);
+        sleep_ms(1000);
     }
 
     cdc_send_string("[SYS] Ready. Starting main loop...\r\n");
     cdc_send_string("========================================\r\n");
 
-    // Main loop
+    uint32_t last_sample_ms = 0;
     uint32_t last_display_ms = 0;
     uint32_t last_serial_ms = 0;
-    uint32_t loop_count = 0;
     bool first_sample = true;
 
     while (1) {
         tud_task();
         uint32_t now = board_millis();
 
-        // Read the ADC sensor
-        adc_read_sensor();
-        bool current_do_state = gpio_get(KY037_DO_PIN);
+        // Sample ADC at fixed interval (~250 Hz)
+        if (now - last_sample_ms >= SAMPLE_INTERVAL_MS) {
+            last_sample_ms = now;
 
-        // Initialize noise floor on first sample
-        if (first_sample) {
+            adc_sample();
+            bool current_do_state = gpio_get(KY037_DO_PIN);
+
+            if (first_sample) {
+                last_adc_value = current_adc_value;
+                last_do_state = current_do_state;
+                noise_floor = current_adc_value;
+                first_sample = false;
+            }
+
+            // Trigger detection
+            bool trigger = detect_trigger(now);
+            if (trigger) {
+                char event_buf[128];
+                snprintf(event_buf, sizeof(event_buf),
+                    "[TRIGGER] PEAK +%u | ADC=%4u | V=%0.2fV | DO=%s\r\n",
+                    (current_adc_value > last_adc_value ? current_adc_value - last_adc_value : 0),
+                    current_adc_value, current_voltage,
+                    current_do_state ? "HIGH" : "LOW ");
+                cdc_send_string(event_buf);
+            }
+
+            // DO edge detection
+            bool do_rising = (!last_do_state && current_do_state);
+            if (do_rising) {
+                char event_buf[128];
+                snprintf(event_buf, sizeof(event_buf),
+                    "[EVENT] DO RISING EDGE | ADC=%4u | V=%0.2fV\r\n",
+                    current_adc_value, current_voltage);
+                cdc_send_string(event_buf);
+            }
+
             last_adc_value = current_adc_value;
             last_do_state = current_do_state;
-            noise_floor = current_adc_value;
-            first_sample = false;
+            ky037_digital_state = current_do_state;
+
+            // Update noise floor
+            if (current_adc_value < noise_floor) {
+                noise_floor = current_adc_value;
+            } else if (noise_floor < PEAK_THRESHOLD) {
+                noise_floor += 1;
+            }
         }
 
-        // Detect LOW -> HIGH edge on DO (GPIO 26)
-        bool do_rising_edge = (!last_do_state && current_do_state);
-
-        // Detect ADC peak: significant increase from last value
-        uint16_t adc_delta = 0;
-        if (current_adc_value > last_adc_value) {
-            adc_delta = current_adc_value - last_adc_value;
-        }
-        bool adc_peak = (adc_delta > PEAK_THRESHOLD) && (adc_delta > NOISE_FLOOR);
-
-        // Update noise floor slowly (running minimum-ish)
-        if (current_adc_value < noise_floor) {
-            noise_floor = current_adc_value;
-        } else if (noise_floor < PEAK_THRESHOLD) {
-            noise_floor += 1;
-        }
-
-        // Send immediate event on DO rising edge
-        if (do_rising_edge) {
-            char event_buf[128];
-            snprintf(event_buf, sizeof(event_buf),
-                "[EVENT] DO RISING EDGE | ADC=%4u | V=%0.2fV\r\n",
-                current_adc_value, current_voltage);
-            cdc_send_string(event_buf);
-        }
-
-        // Send immediate event on ADC peak
-        if (adc_peak) {
-            char event_buf[128];
-            snprintf(event_buf, sizeof(event_buf),
-                "[PEAK] ADC PEAK +%u | ADC=%4u | V=%0.2fV | DO=%s\r\n",
-                adc_delta, current_adc_value, current_voltage,
-                current_do_state ? "HIGH" : "LOW ");
-            cdc_send_string(event_buf);
-        }
-
-        // Store current state for next iteration
-        last_adc_value = current_adc_value;
-        last_do_state = current_do_state;
-        ky037_digital_state = current_do_state;
-
-        // Update ECG buffer
-        ecg_buffer[ecg_index] = current_adc_value;
-        ecg_index = (ecg_index + 1) % ECG_BUFFER_SIZE;
-
-        // Update display periodically
+        // Update display every 300ms
         if (now - last_display_ms >= DISPLAY_UPDATE_MS) {
             last_display_ms = now;
-            loop_count++;
-
             memset(buf, 0, SSD1306_BUF_LEN);
 
             if (!oled_ok) {
@@ -472,35 +472,40 @@ int main(void) {
                 char line[32];
 
                 // Title
-                WriteString(buf, 0, 0, "OSC / DIGITAL");
+                WriteString(buf, 0, 0, "KY-037 OSC");
 
-                // ADC voltage label and value
-                snprintf(line, sizeof(line), "ADC:%4u", current_adc_value);
+                // Average ADC voltage (left top)
+                if (adc_samples > 0) {
+                    adc_average = (uint16_t)(adc_sum / adc_samples);
+                }
+                snprintf(line, sizeof(line), "AVG:%4u", adc_average);
                 WriteString(buf, 0, 8, line);
 
-                snprintf(line, sizeof(line), "V:%0.2fV", current_voltage);
+                snprintf(line, sizeof(line), "V:%0.2fV", (adc_average * ADC_VREF) / ADC_RESOLUTION);
                 WriteString(buf, 0, 16, line);
 
-                // Digital state label
+                // DO state (right top)
                 snprintf(line, sizeof(line), "DO:%s", ky037_digital_state ? "HIGH" : "LOW ");
-                WriteString(buf, 70, 0, line);
+                WriteString(buf, 80, 0, line);
 
-                // Oscilloscope trace on the left side
+                // Oscilloscope trace: 64 pixels wide, 500ms window
                 uint8_t trace_x = 0;
-                uint8_t trace_y_start = 28;
-                uint8_t trace_height = 32;
-                for (uint8_t x = 0; x < 64; x++) {
-                    uint8_t idx = (ecg_index + x) % ECG_BUFFER_SIZE;
-                    uint16_t val = ecg_buffer[idx];
-                    uint8_t y = trace_y_start + trace_height - ((val * trace_height) / 4095);
-                    if (y < trace_y_start) y = trace_y_start;
-                    if (y >= trace_y_start + trace_height) y = trace_y_start + trace_height - 1;
-                    SetPixel(buf, trace_x + x, y, true);
-                }
+                uint8_t trace_y = 28;
+                uint8_t trace_h = 32;
 
                 // Trace baseline
                 for (uint8_t x = 0; x < 64; x++) {
-                    SetPixel(buf, trace_x + x, trace_y_start + trace_height - 1, true);
+                    SetPixel(buf, trace_x + x, trace_y + trace_h - 1, true);
+                }
+
+                // Draw waveform from buffer
+                for (uint8_t x = 0; x < 64; x++) {
+                    uint8_t idx = (scope_index + x) % SCOPE_BUFFER_SIZE;
+                    uint16_t val = scope_buffer[idx];
+                    uint8_t y = trace_y + trace_h - ((val * trace_h) / 4095);
+                    if (y < trace_y) y = trace_y;
+                    if (y >= trace_y + trace_h) y = trace_y + trace_h - 1;
+                    SetPixel(buf, trace_x + x, y, true);
                 }
 
                 // Vertical separator
@@ -508,32 +513,44 @@ int main(void) {
                     SetPixel(buf, 64, y, true);
                 }
 
-                // Right side: digital state as big indicator
+                // Right side: digital state big
                 if (ky037_digital_state) {
-                    WriteString(buf, 70, 20, "HIGH");
+                    WriteString(buf, 72, 20, "HIGH");
                 } else {
-                    WriteString(buf, 70, 20, "LOW");
+                    WriteString(buf, 72, 20, "LOW");
                 }
 
-                // Vertical level bar on right side
+                // Right side: trigger indicator
+                if (trigger_fired) {
+                    WriteString(buf, 72, 40, "TRIG");
+                } else {
+                    WriteString(buf, 72, 40, "    ");
+                }
+
+                // Right side: sample counter bar
                 uint8_t bar_x = 120;
-                uint8_t level_height = (current_adc_value * trace_height) / 4095;
-                for (uint8_t y = 0; y < level_height && y < trace_height; y++) {
-                    SetPixel(buf, bar_x, trace_y_start + trace_height - 1 - y, true);
+                uint8_t level_h = (current_adc_value * trace_h) / 4095;
+                for (uint8_t y = 0; y < level_h && y < trace_h; y++) {
+                    SetPixel(buf, bar_x, trace_y + trace_h - 1 - y, true);
                 }
             }
 
             render(buf, &frame_area);
+
+            // Reset average accumulator after display update
+            adc_sum = 0;
+            adc_samples = 0;
         }
 
-        // Send debug data over serial periodically
+        // Serial debug every 500ms
         if (now - last_serial_ms >= SERIAL_UPDATE_MS) {
             last_serial_ms = now;
             char serial_buf[128];
             snprintf(serial_buf, sizeof(serial_buf),
-                "[DATA] ADC=%4u | V=%0.2fV | DO=%s | OLED=%s\r\n",
+                "[DATA] ADC=%4u | V=%0.2fV | AVG=%4u | DO=%s | OLED=%s\r\n",
                 current_adc_value,
                 current_voltage,
+                adc_average,
                 ky037_digital_state ? "HIGH" : "LOW ",
                 oled_ok ? "OK" : "FAIL");
             cdc_send_string(serial_buf);
