@@ -2,11 +2,17 @@
  * ADC + OLED SSD1306 - Raspberry Pi Pico RP2040
  *
  * Osciloscopio digital con KY-037.
- * - Izquierda arriba: voltaje ADC promedio
+ * - Izquierda arriba: voltaje ADC promedio (3 decimales)
  * - Derecha arriba: indicador digital DO (cuadrado vacío/lleno)
- * - Abajo: trazo tipo osciloscopio, 2 segundos de ventana
- * - Trigger automático por pico de señal
- * - USB CDC para debug
+ * - Abajo: trazo tipo osciloscopio, 512ms de ventana
+ * - Trigger por caída de señal: se dispara cuando el ADC baja
+ *   por debajo del nivel configurado
+ * - USB CDC para configuración de trigger y escala
+ *
+ * Comandos serial:
+ *   TRIG:1.700   -> setea nivel de trigger en voltios
+ *   SCALE:50     -> setea escala/amplitud (1, 10, 30, 50, 100)
+ *   GET          -> muestra configuración actual
  *
  * Hardware:
  *   - KY-037 AO -> GPIO 27 (ADC1)
@@ -55,13 +61,11 @@
 #define SSD1306_I2C_ADDR   0x3C
 
 // Timebase: 128 samples at 4ms = 512ms window
-#define SAMPLE_INTERVAL_MS 4       // ~250 Hz (128 * 4ms = 512ms)
+#define SAMPLE_INTERVAL_MS 4       // ~250 Hz
 #define DISPLAY_UPDATE_MS  200     // Refresh display every 200ms
 #define SERIAL_UPDATE_MS   1000    // Serial debug every 1s
 
 // Trigger configuration
-#define PEAK_THRESHOLD     60      // Minimum ADC rise to detect peak (more sensitive)
-#define NOISE_FLOOR        40      // Ignore fluctuations below this
 #define TRIGGER_HOLD_MS    300     // Block retrigger for 300ms
 
 // Oscilloscope buffer
@@ -69,10 +73,32 @@
 static uint16_t scope_buffer[SCOPE_BUFFER_SIZE];
 static uint8_t scope_index = 0;
 static bool scope_triggered = false;
+
+//====================================================================+
+// GLOBAL VARIABLES
+//====================================================================+
+
+static uint16_t current_adc_value = 0;
+static float current_voltage = 0.0f;
+static bool ky037_digital_state = false;
+static bool oled_ok = false;
+
+// Trigger configuration
+static uint16_t trigger_voltage_mv = 1700;
+static uint16_t trigger_scale = 10;
+static uint16_t trigger_adc_level = 0;
+
+// Oscilloscope state
+static uint16_t adc_sum = 0;
+static uint16_t adc_samples = 0;
+static uint16_t adc_average = 0;
+static uint16_t last_adc_value = 0;
+static bool last_do_state = false;
+static uint16_t noise_floor = 0;
 static uint32_t last_trigger_ms = 0;
 
 //====================================================================+
-// SSD1306 DRIVER (from pico-examples)
+// ADC FUNCTIONS
 //====================================================================+
 
 #define SSD1306_SET_MEM_MODE        _u(0x20)
@@ -301,21 +327,60 @@ static void cdc_send_string(const char *str) {
 }
 
 //====================================================================+
-// GLOBAL VARIABLES
+// SERIAL COMMAND PARSER
 //====================================================================+
 
-static uint16_t current_adc_value = 0;
-static float current_voltage = 0.0f;
-static bool ky037_digital_state = false;
-static bool oled_ok = false;
+static void process_serial_command(const char *cmd) {
+    if (strncmp(cmd, "TRIG:", 5) == 0) {
+        float voltage = atof(cmd + 5);
+        if (voltage >= 0.0f && voltage <= 3.3f) {
+            trigger_voltage_mv = (uint16_t)(voltage * 1000.0f);
+            trigger_adc_level = (uint16_t)((trigger_voltage_mv / 1000.0f) * ADC_RESOLUTION / ADC_VREF);
+            char resp[64];
+            snprintf(resp, sizeof(resp), "[CFG] Trigger set to %.3fV (%u ADC)\r\n",
+                voltage, trigger_adc_level);
+            cdc_send_string(resp);
+        } else {
+            cdc_send_string("[CFG] Error: voltage must be 0.000 - 3.300V\r\n");
+        }
+    } else if (strncmp(cmd, "SCALE:", 6) == 0) {
+        uint16_t scale = atoi(cmd + 6);
+        if (scale == 1 || scale == 10 || scale == 30 || scale == 50 || scale == 100) {
+            trigger_scale = scale;
+            char resp[64];
+            snprintf(resp, sizeof(resp), "[CFG] Scale set to %u\r\n", scale);
+            cdc_send_string(resp);
+        } else {
+            cdc_send_string("[CFG] Error: scale must be 1, 10, 30, 50 or 100\r\n");
+        }
+    } else if (strcmp(cmd, "GET") == 0) {
+        char resp[128];
+        snprintf(resp, sizeof(resp),
+            "[CFG] Trigger=%.3fV (%u ADC) | Scale=%u | NoiseFloor=%u\r\n",
+            trigger_voltage_mv / 1000.0f, trigger_adc_level, trigger_scale, noise_floor);
+        cdc_send_string(resp);
+    }
+}
 
-// Oscilloscope state
-static uint16_t adc_sum = 0;
-static uint16_t adc_samples = 0;
-static uint16_t adc_average = 0;
-static uint16_t last_adc_value = 0;
-static bool last_do_state = false;
-static uint16_t noise_floor = 0;
+static void check_serial_commands(void) {
+    if (!tud_cdc_connected()) return;
+
+    static char cmd_buf[64];
+    static uint8_t cmd_len = 0;
+
+    while (tud_cdc_available()) {
+        char c = tud_cdc_read_char();
+        if (c == '\r' || c == '\n') {
+            if (cmd_len > 0) {
+                cmd_buf[cmd_len] = '\0';
+                process_serial_command(cmd_buf);
+                cmd_len = 0;
+            }
+        } else if (cmd_len < sizeof(cmd_buf) - 1) {
+            cmd_buf[cmd_len++] = c;
+        }
+    }
+}
 
 //====================================================================+
 // ADC FUNCTIONS
@@ -343,19 +408,18 @@ static void adc_sample(void) {
 }
 
 //====================================================================+
-// TRIGGER DETECTION
-//====================================================================+
+// TRIGGER DETECTION (falling edge below level)
+//=====================================================================
 
 static bool detect_trigger(uint32_t now) {
-    uint16_t delta = 0;
-    if (current_adc_value > last_adc_value) {
-        delta = current_adc_value - last_adc_value;
-    }
+    // Trigger fires when signal goes BELOW the configured level
+    bool below_level = current_adc_value < trigger_adc_level;
+    bool was_above = last_adc_value >= trigger_adc_level;
+    bool falling_edge = below_level && was_above;
 
-    bool peak = (delta > PEAK_THRESHOLD) && (delta > noise_floor);
     bool armed = (now - last_trigger_ms) > TRIGGER_HOLD_MS;
 
-    if (peak && armed) {
+    if (falling_edge && armed) {
         last_trigger_ms = now;
         return true;
     }
@@ -378,6 +442,8 @@ int main(void) {
     cdc_send_string("  KY-037 Oscilloscope\r\n");
     cdc_send_string("  Raspberry Pi Pico RP2040\r\n");
     cdc_send_string("========================================\r\n");
+    cdc_send_string("[CFG] Default trigger: 1.700V\r\n");
+    cdc_send_string("[CFG] Commands: TRIG:1.700, SCALE:50, GET\r\n");
 
     adc_init_sensor();
     cdc_send_string("[ADC] KY-037 AO=GP27, DO=GP26 initialized\r\n");
@@ -438,7 +504,10 @@ int main(void) {
         tud_task();
         uint32_t now = board_millis();
 
-        // Sample ADC at fixed interval (~64 Hz)
+        // Check for serial commands
+        check_serial_commands();
+
+        // Sample ADC at fixed interval (~250 Hz)
         if (now - last_sample_ms >= SAMPLE_INTERVAL_MS) {
             last_sample_ms = now;
 
@@ -449,20 +518,18 @@ int main(void) {
                 last_adc_value = current_adc_value;
                 last_do_state = current_do_state;
                 noise_floor = current_adc_value;
+                // Compute initial trigger ADC level
+                trigger_adc_level = (uint16_t)((trigger_voltage_mv / 1000.0f) * ADC_RESOLUTION / ADC_VREF);
                 first_sample = false;
             }
 
-            // Trigger detection
+            // Trigger detection: falling edge below trigger level
             bool trigger = detect_trigger(now);
             if (trigger) {
                 memset(scope_buffer, 0, sizeof(scope_buffer));
                 scope_index = 0;
                 scope_triggered = true;
             }
-
-            // DO edge detection (no serial spam)
-            bool do_rising = (!last_do_state && current_do_state);
-            (void)do_rising;
 
             last_adc_value = current_adc_value;
             last_do_state = current_do_state;
@@ -471,8 +538,8 @@ int main(void) {
             // Update noise floor
             if (current_adc_value < noise_floor) {
                 noise_floor = current_adc_value;
-            } else if (noise_floor < PEAK_THRESHOLD) {
-                noise_floor += 1;
+            } else if (noise_floor < trigger_adc_level) {
+                noise_floor++;
             }
         }
 
@@ -495,6 +562,10 @@ int main(void) {
                 }
                 snprintf(line, sizeof(line), "V:%0.3fV", (adc_average * ADC_VREF) / ADC_RESOLUTION);
                 WriteString(buf, 0, 0, line);
+
+                // Trigger level indicator (top middle)
+                snprintf(line, sizeof(line), "T:%.3fV", trigger_voltage_mv / 1000.0f);
+                WriteString(buf, 42, 0, line);
 
                 // DO indicator (top right): empty square for LOW, filled for HIGH
                 if (ky037_digital_state) {
@@ -528,6 +599,14 @@ int main(void) {
                         SetPixel(buf, x, y, true);
                     }
                 }
+
+                // Trigger level line (dashed)
+                uint8_t trig_y = trace_y + trace_h - ((trigger_adc_level * trace_h) / 4095);
+                if (trig_y >= trace_y && trig_y < trace_y + trace_h) {
+                    for (uint8_t x = 0; x < SSD1306_WIDTH; x += 4) {
+                        SetPixel(buf, x, trig_y, true);
+                    }
+                }
             }
 
             render(buf, &frame_area);
@@ -542,9 +621,10 @@ int main(void) {
             last_serial_ms = now;
             char serial_buf[128];
             snprintf(serial_buf, sizeof(serial_buf),
-                "[DATA] ADC=%4u | V=%0.3fV | DO=%s\r\n",
+                "[DATA] ADC=%4u | V=%0.3fV | TRIG=%u | DO=%s\r\n",
                 current_adc_value,
                 current_voltage,
+                trigger_adc_level,
                 ky037_digital_state ? "HIGH" : "LOW ");
             cdc_send_string(serial_buf);
         }
