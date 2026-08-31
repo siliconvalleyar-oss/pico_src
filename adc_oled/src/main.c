@@ -54,15 +54,15 @@
 #define SSD1306_WIDTH      128
 #define SSD1306_I2C_ADDR   0x3C
 
-// Timebase: 128 samples = 2 seconds window
-#define SAMPLE_INTERVAL_MS 15      // ~64 Hz (128 * 15ms = 1.92s ≈ 2s)
+// Timebase: 128 samples at 4ms = 512ms window
+#define SAMPLE_INTERVAL_MS 4       // ~250 Hz (128 * 4ms = 512ms)
 #define DISPLAY_UPDATE_MS  200     // Refresh display every 200ms
-#define SERIAL_UPDATE_MS   500     // Serial debug every 500ms
+#define SERIAL_UPDATE_MS   1000    // Serial debug every 1s
 
 // Trigger configuration
-#define PEAK_THRESHOLD     150     // Minimum ADC rise to detect peak
-#define NOISE_FLOOR        80      // Ignore fluctuations below this
-#define TRIGGER_HOLD_MS    500     // Block retrigger for 500ms
+#define PEAK_THRESHOLD     60      // Minimum ADC rise to detect peak (more sensitive)
+#define NOISE_FLOOR        40      // Ignore fluctuations below this
+#define TRIGGER_HOLD_MS    300     // Block retrigger for 300ms
 
 // Oscilloscope buffer
 #define SCOPE_BUFFER_SIZE  128
@@ -458,25 +458,11 @@ int main(void) {
                 memset(scope_buffer, 0, sizeof(scope_buffer));
                 scope_index = 0;
                 scope_triggered = true;
-
-                char event_buf[128];
-                snprintf(event_buf, sizeof(event_buf),
-                    "[TRIGGER] PEAK +%u | ADC=%4u | V=%0.2fV | DO=%s\r\n",
-                    (current_adc_value > last_adc_value ? current_adc_value - last_adc_value : 0),
-                    current_adc_value, current_voltage,
-                    current_do_state ? "HIGH" : "LOW ");
-                cdc_send_string(event_buf);
             }
 
-            // DO edge detection
+            // DO edge detection (no serial spam)
             bool do_rising = (!last_do_state && current_do_state);
-            if (do_rising) {
-                char event_buf[128];
-                snprintf(event_buf, sizeof(event_buf),
-                    "[EVENT] DO RISING EDGE | ADC=%4u | V=%0.2fV\r\n",
-                    current_adc_value, current_voltage);
-                cdc_send_string(event_buf);
-            }
+            (void)do_rising;
 
             last_adc_value = current_adc_value;
             last_do_state = current_do_state;
@@ -551,17 +537,15 @@ int main(void) {
             adc_samples = 0;
         }
 
-        // Serial debug every 500ms
+        // Serial debug every 1s
         if (now - last_serial_ms >= SERIAL_UPDATE_MS) {
             last_serial_ms = now;
             char serial_buf[128];
             snprintf(serial_buf, sizeof(serial_buf),
-                "[DATA] ADC=%4u | V=%0.2fV | AVG=%4u | DO=%s | OLED=%s\r\n",
+                "[DATA] ADC=%4u | V=%0.3fV | DO=%s\r\n",
                 current_adc_value,
                 current_voltage,
-                adc_average,
-                ky037_digital_state ? "HIGH" : "LOW ",
-                oled_ok ? "OK" : "FAIL");
+                ky037_digital_state ? "HIGH" : "LOW ");
             cdc_send_string(serial_buf);
         }
     }
