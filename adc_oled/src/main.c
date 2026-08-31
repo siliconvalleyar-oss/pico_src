@@ -472,35 +472,54 @@ int main(void) {
                 char line[32];
 
                 // Title
-                WriteString(buf, 0, 0, "KY-037 ECG");
+                WriteString(buf, 0, 0, "OSC / DIGITAL");
 
-                // ADC value
+                // ADC voltage label and value
                 snprintf(line, sizeof(line), "ADC:%4u", current_adc_value);
                 WriteString(buf, 0, 8, line);
 
-                // Voltage
                 snprintf(line, sizeof(line), "V:%0.2fV", current_voltage);
                 WriteString(buf, 0, 16, line);
 
-                // Digital state
+                // Digital state label
                 snprintf(line, sizeof(line), "DO:%s", ky037_digital_state ? "HIGH" : "LOW ");
-                WriteString(buf, 0, 24, line);
+                WriteString(buf, 70, 0, line);
 
-                // ECG line graph
-                uint8_t ecg_y_base = 40;
-                uint8_t ecg_height = 20;
-                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
+                // Oscilloscope trace on the left side
+                uint8_t trace_x = 0;
+                uint8_t trace_y_start = 28;
+                uint8_t trace_height = 32;
+                for (uint8_t x = 0; x < 64; x++) {
                     uint8_t idx = (ecg_index + x) % ECG_BUFFER_SIZE;
                     uint16_t val = ecg_buffer[idx];
-                    uint8_t y = ecg_y_base + ecg_height - ((val * ecg_height) / 4095);
-                    if (y < ecg_y_base) y = ecg_y_base;
-                    if (y >= ecg_y_base + ecg_height) y = ecg_y_base + ecg_height - 1;
-                    SetPixel(buf, x, y, true);
+                    uint8_t y = trace_y_start + trace_height - ((val * trace_height) / 4095);
+                    if (y < trace_y_start) y = trace_y_start;
+                    if (y >= trace_y_start + trace_height) y = trace_y_start + trace_height - 1;
+                    SetPixel(buf, trace_x + x, y, true);
                 }
 
-                // ECG baseline
-                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
-                    SetPixel(buf, x, ecg_y_base + ecg_height - 1, true);
+                // Trace baseline
+                for (uint8_t x = 0; x < 64; x++) {
+                    SetPixel(buf, trace_x + x, trace_y_start + trace_height - 1, true);
+                }
+
+                // Vertical separator
+                for (uint8_t y = 0; y < SSD1306_HEIGHT; y++) {
+                    SetPixel(buf, 64, y, true);
+                }
+
+                // Right side: digital state as big indicator
+                if (ky037_digital_state) {
+                    WriteString(buf, 70, 20, "HIGH");
+                } else {
+                    WriteString(buf, 70, 20, "LOW");
+                }
+
+                // Vertical level bar on right side
+                uint8_t bar_x = 120;
+                uint8_t level_height = (current_adc_value * trace_height) / 4095;
+                for (uint8_t y = 0; y < level_height && y < trace_height; y++) {
+                    SetPixel(buf, bar_x, trace_y_start + trace_height - 1 - y, true);
                 }
             }
 
