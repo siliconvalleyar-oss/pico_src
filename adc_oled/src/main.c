@@ -507,7 +507,7 @@ int main(void) {
                 if (adc_samples > 0) {
                     adc_average = (uint16_t)(adc_sum / adc_samples);
                 }
-                snprintf(line, sizeof(line), "V:%0.2fV", (adc_average * ADC_VREF) / ADC_RESOLUTION);
+                snprintf(line, sizeof(line), "V:%0.3fV", (adc_average * ADC_VREF) / ADC_RESOLUTION);
                 WriteString(buf, 0, 0, line);
 
                 // DO indicator (top right): empty square for LOW, filled for HIGH
@@ -517,19 +517,9 @@ int main(void) {
                     DrawCircle(buf, 120, 4, 4, false);
                 }
 
-                // Divider line
-                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
-                    SetPixel(buf, x, 15, true);
-                }
-
                 // Oscilloscope area: y=16..63 (48 pixels high), x=0..127 (128 pixels wide)
                 uint8_t trace_y = 16;
                 uint8_t trace_h = 48;
-
-                // Baseline
-                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
-                    SetPixel(buf, x, trace_y + trace_h - 1, true);
-                }
 
                 // Draw waveform
                 if (scope_triggered && scope_index < SCOPE_BUFFER_SIZE) {
