@@ -166,27 +166,36 @@ configure_scale() {
     echo ""
     print_info "Configurar escala/amplitud"
     echo ""
-    echo "Valores válidos: 1, 10, 30, 50, 100"
+    echo "Valores válidos: 0.1 - 100.0 (con 1 decimal)"
+    echo "Ejemplos: 0.5, 1.0, 10.0, 30.0, 50.0, 100.0"
     echo ""
 
     while true; do
         read -p "Ingrese la escala: " scale
 
-        # Validate input
-        if [[ ! "$scale" =~ ^[0-9]+$ ]]; then
-            print_error "Debe ingresar un número entero"
+        # Validate input: float between 0.1 and 100.0
+        if [[ ! "$scale" =~ ^[0-9]+(\.[0-9])?$ ]]; then
+            print_error "Formato inválido. Use por ejemplo: 0.5, 1.0, 10.0, 30.0"
             continue
         fi
 
-        if [[ "$scale" != "1" && "$scale" != "10" && "$scale" != "30" && "$scale" != "50" && "$scale" != "100" ]]; then
-            print_error "Valor inválido. Use: 1, 10, 30, 50 o 100"
+        # Check range
+        local scale_float
+        scale_float=$(echo "$scale" | awk '{print $1}')
+        if (( $(echo "$scale_float < 0.1" | bc -l 2>/dev/null || echo 1) )) || \
+           (( $(echo "$scale_float > 100.0" | bc -l 2>/dev/null || echo 0) )); then
+            print_error "La escala debe estar entre 0.1 y 100.0"
             continue
         fi
+
+        # Normalize to 1 decimal place
+        local scale_normalized
+        scale_normalized=$(printf "%.1f" "$scale_float")
 
         # Send command
-        print_info "Enviando: SCALE:$scale"
+        print_info "Enviando: SCALE:$scale_normalized"
         local response
-        response=$(send_command "$port" "SCALE:$scale" 3)
+        response=$(send_command "$port" "SCALE:$scale_normalized" 3)
 
         if [[ -n "$response" ]]; then
             echo ""
@@ -222,6 +231,26 @@ show_current_config() {
     fi
 }
 
+show_firmware_version() {
+    local port="$1"
+
+    echo ""
+    print_info "Consultando versión del firmware"
+    echo ""
+
+    local response
+    response=$(send_command "$port" "VERSION" 3)
+
+    if [[ -n "$response" ]]; then
+        print_step "Versión:"
+        echo "$response" | while IFS= read -r line; do
+            echo -e "  ${GREEN}>${NC} $line"
+        done
+    else
+        print_warning "No se recibió respuesta del Pico (timeout 3s)"
+    fi
+}
+
 main_menu() {
     local port="$1"
 
@@ -234,7 +263,8 @@ main_menu() {
         echo "  1) Configurar nivel de trigger (voltaje)"
         echo "  2) Configurar escala/amplitud"
         echo "  3) Ver configuración actual"
-        echo "  4) Salir"
+        echo "  4) Ver versión del firmware"
+        echo "  5) Salir"
         echo ""
         read -p "Seleccione una opción: " option
 
@@ -249,6 +279,9 @@ main_menu() {
                 show_current_config "$port"
                 ;;
             4)
+                show_firmware_version "$port"
+                ;;
+            5)
                 echo ""
                 print_step "Saliendo..."
                 exit 0

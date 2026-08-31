@@ -85,8 +85,9 @@ static bool oled_ok = false;
 
 // Trigger configuration
 static uint16_t trigger_voltage_mv = 1700;
-static uint16_t trigger_scale = 10;
+static float trigger_scale = 10.0f;
 static uint16_t trigger_adc_level = 0;
+static bool monitor_enabled = true;
 
 // Oscilloscope state
 static uint16_t adc_sum = 0;
@@ -344,20 +345,33 @@ static void process_serial_command(const char *cmd) {
             cdc_send_string("[CFG] Error: voltage must be 0.000 - 3.300V\r\n");
         }
     } else if (strncmp(cmd, "SCALE:", 6) == 0) {
-        uint16_t scale = atoi(cmd + 6);
-        if (scale == 1 || scale == 10 || scale == 30 || scale == 50 || scale == 100) {
+        float scale = atof(cmd + 6);
+        if (scale >= 0.1f && scale <= 100.0f) {
             trigger_scale = scale;
             char resp[64];
-            snprintf(resp, sizeof(resp), "[CFG] Scale set to %u\r\n", scale);
+            snprintf(resp, sizeof(resp), "[CFG] Scale set to %.1f\r\n", scale);
             cdc_send_string(resp);
         } else {
-            cdc_send_string("[CFG] Error: scale must be 1, 10, 30, 50 or 100\r\n");
+            cdc_send_string("[CFG] Error: scale must be 0.1 - 100.0\r\n");
         }
+    } else if (strncmp(cmd, "MONITOR:", 8) == 0) {
+        if (strcmp(cmd + 8, "ON") == 0) {
+            monitor_enabled = true;
+            cdc_send_string("[CFG] Monitor enabled\r\n");
+        } else if (strcmp(cmd + 8, "OFF") == 0) {
+            monitor_enabled = false;
+            cdc_send_string("[CFG] Monitor disabled\r\n");
+        } else {
+            cdc_send_string("[CFG] Error: use MONITOR:ON or MONITOR:OFF\r\n");
+        }
+    } else if (strcmp(cmd, "VERSION") == 0) {
+        cdc_send_string("[CFG] Firmware: adc_oled v1.2.0\r\n");
     } else if (strcmp(cmd, "GET") == 0) {
         char resp[128];
         snprintf(resp, sizeof(resp),
-            "[CFG] Trigger=%.3fV (%u ADC) | Scale=%u | NoiseFloor=%u\r\n",
-            trigger_voltage_mv / 1000.0f, trigger_adc_level, trigger_scale, noise_floor);
+            "[CFG] Trigger=%.3fV (%u ADC) | Scale=%.1f | Monitor=%s | NoiseFloor=%u\r\n",
+            trigger_voltage_mv / 1000.0f, trigger_adc_level, trigger_scale,
+            monitor_enabled ? "ON" : "OFF", noise_floor);
         cdc_send_string(resp);
     }
 }
@@ -392,6 +406,12 @@ static void adc_init_sensor(void) {
     adc_select_input(ADC_CHANNEL);
     gpio_init(KY037_DO_PIN);
     gpio_set_dir(KY037_DO_PIN, GPIO_IN);
+
+#if defined(PICO_DEFAULT_LED_PIN)
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+    gpio_put(PICO_DEFAULT_LED_PIN, 0);
+#endif
 }
 
 static void adc_sample(void) {
@@ -535,6 +555,10 @@ int main(void) {
             last_do_state = current_do_state;
             ky037_digital_state = current_do_state;
 
+#if defined(PICO_DEFAULT_LED_PIN)
+            gpio_put(PICO_DEFAULT_LED_PIN, ky037_digital_state ? 1 : 0);
+#endif
+
             // Update noise floor
             if (current_adc_value < noise_floor) {
                 noise_floor = current_adc_value;
@@ -619,14 +643,18 @@ int main(void) {
         // Serial debug every 1s
         if (now - last_serial_ms >= SERIAL_UPDATE_MS) {
             last_serial_ms = now;
-            char serial_buf[128];
-            snprintf(serial_buf, sizeof(serial_buf),
-                "[DATA] ADC=%4u | V=%0.3fV | TRIG=%u | DO=%s\r\n",
-                current_adc_value,
-                current_voltage,
-                trigger_adc_level,
-                ky037_digital_state ? "HIGH" : "LOW ");
-            cdc_send_string(serial_buf);
+            if (monitor_enabled) {
+                char serial_buf[128];
+                snprintf(serial_buf, sizeof(serial_buf),
+                    "[DATA] ADC=%4u | V=%0.3fV | TRIG=%u | DO=%s\r\n",
+                    current_adc_value,
+                    current_voltage,
+                    trigger_adc_level,
+                    ky037_digital_state ? "HIGH" : "LOW ");
+                cdc_send_string(serial_buf);
+            } else {
+                cdc_send_string("[CFG] adc_oled v1.2.0\r\n");
+            }
         }
     }
 
