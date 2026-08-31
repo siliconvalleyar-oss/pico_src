@@ -59,7 +59,7 @@
 #define SSD1306_I2C_ADDR   0x3C
 
 // Display refresh interval
-#define DISPLAY_UPDATE_MS  50      // Update every 50ms (20 FPS)
+#define DISPLAY_UPDATE_MS  300     // Update every 300ms (~3.3 FPS)
 
 // Serial debug interval
 #define SERIAL_UPDATE_MS   500     // Send debug data every 500ms (2 Hz)
@@ -285,6 +285,11 @@ static uint16_t last_adc_value = 0;
 static bool last_do_state = false;
 static uint16_t noise_floor = 0;
 
+// ECG buffer for display
+#define ECG_BUFFER_SIZE   128
+static uint16_t ecg_buffer[ECG_BUFFER_SIZE];
+static uint8_t ecg_index = 0;
+
 //====================================================================+
 // ADC FUNCTIONS
 //====================================================================+
@@ -447,6 +452,10 @@ int main(void) {
         last_do_state = current_do_state;
         ky037_digital_state = current_do_state;
 
+        // Update ECG buffer
+        ecg_buffer[ecg_index] = current_adc_value;
+        ecg_index = (ecg_index + 1) % ECG_BUFFER_SIZE;
+
         // Update display periodically
         if (now - last_display_ms >= DISPLAY_UPDATE_MS) {
             last_display_ms = now;
@@ -463,7 +472,7 @@ int main(void) {
                 char line[32];
 
                 // Title
-                WriteString(buf, 0, 0, "KY-037 Sound Det.");
+                WriteString(buf, 0, 0, "KY-037 ECG");
 
                 // ADC value
                 snprintf(line, sizeof(line), "ADC:%4u", current_adc_value);
@@ -477,34 +486,22 @@ int main(void) {
                 snprintf(line, sizeof(line), "DO:%s", ky037_digital_state ? "HIGH" : "LOW ");
                 WriteString(buf, 0, 24, line);
 
-                // Bar graph label
-                WriteString(buf, 0, 32, "Nivel:");
-
-                // Draw bar outline
-                uint8_t bar_width = (current_adc_value * (SSD1306_WIDTH - 10)) / 4095;
-                uint8_t bar_x = 5;
-                uint8_t bar_y = 40;
-
-                for (uint8_t i = 0; i < SSD1306_WIDTH - 10; i++) {
-                    SetPixel(buf, bar_x + i, bar_y, true);
-                    SetPixel(buf, bar_x + i, bar_y + 10, true);
-                }
-                for (uint8_t i = 0; i < 11; i++) {
-                    SetPixel(buf, bar_x, bar_y + i, true);
-                    SetPixel(buf, bar_x + SSD1306_WIDTH - 10 - 1, bar_y + i, true);
+                // ECG line graph
+                uint8_t ecg_y_base = 40;
+                uint8_t ecg_height = 20;
+                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
+                    uint8_t idx = (ecg_index + x) % ECG_BUFFER_SIZE;
+                    uint16_t val = ecg_buffer[idx];
+                    uint8_t y = ecg_y_base + ecg_height - ((val * ecg_height) / 4095);
+                    if (y < ecg_y_base) y = ecg_y_base;
+                    if (y >= ecg_y_base + ecg_height) y = ecg_y_base + ecg_height - 1;
+                    SetPixel(buf, x, y, true);
                 }
 
-                // Fill the bar
-                for (uint8_t x = 1; x < bar_width - 1 && x < SSD1306_WIDTH - 11; x++) {
-                    for (uint8_t y = 1; y < 9; y++) {
-                        SetPixel(buf, bar_x + x, bar_y + y, true);
-                    }
+                // ECG baseline
+                for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
+                    SetPixel(buf, x, ecg_y_base + ecg_height - 1, true);
                 }
-
-                // Percentage
-                uint8_t percentage = (current_adc_value * 100) / 4095;
-                snprintf(line, sizeof(line), "%3u%%", percentage);
-                WriteString(buf, 40, 56, line);
             }
 
             render(buf, &frame_area);
