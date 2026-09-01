@@ -379,6 +379,60 @@ configure_trigger_mode() {
     done
 }
 
+configure_scope_window() {
+    local port="$1"
+
+    echo ""
+    print_info "Configurar ventana de tiempo del osciloscopio"
+    echo ""
+    echo "Rango: 100 - 5000 ms"
+    echo "Ejemplos: 500 (medio segundo), 1000 (1s), 2000 (2s)"
+    echo ""
+
+    while true; do
+        read -p "Ingrese la ventana de tiempo en ms: " window_ms
+
+        # Validate input: integer between 100 and 5000
+        if [[ ! "$window_ms" =~ ^[0-9]+$ ]]; then
+            print_error "Debe ingresar un número entero"
+            continue
+        fi
+
+        if (( window_ms < 100 || window_ms > 5000 )); then
+            print_error "La ventana debe estar entre 100 y 5000 ms"
+            continue
+        fi
+
+        # Send command
+        print_info "Enviando: TIME:$window_ms"
+        local response=""
+        local attempts=3
+
+        for ((i=1; i<=attempts; i++)); do
+            if [[ $i -gt 1 ]]; then
+                print_info "Reintentando... ($i/$attempts)"
+                sleep 0.3
+            fi
+            response=$(send_command "$port" "TIME:$window_ms" 5)
+            if [[ -n "$response" ]]; then
+                break
+            fi
+        done
+
+        if [[ -n "$response" ]]; then
+            echo ""
+            print_step "Respuesta del Pico:"
+            echo "$response" | while IFS= read -r line; do
+                echo -e "  ${GREEN}>${NC} $line"
+            done
+        else
+            print_warning "No se recibió respuesta del Pico después de $attempts intentos"
+        fi
+
+        break
+    done
+}
+
 main_menu() {
     local port="$1"
 
@@ -391,9 +445,10 @@ main_menu() {
         echo "  1) Configurar nivel de trigger (voltaje)"
         echo "  2) Configurar escala/amplitud"
         echo "  3) Configurar modo de trigger (ACTIVE LOW/HIGH)"
-        echo "  4) Ver configuración actual"
-        echo "  5) Ver versión del firmware"
-        echo "  6) Salir"
+        echo "  4) Configurar ventana de tiempo del osciloscopio"
+        echo "  5) Ver configuración actual"
+        echo "  6) Ver versión del firmware"
+        echo "  7) Salir"
         echo ""
         read -p "Seleccione una opción: " option
 
@@ -408,12 +463,15 @@ main_menu() {
                 configure_trigger_mode "$port"
                 ;;
             4)
-                show_current_config "$port"
+                configure_scope_window "$port"
                 ;;
             5)
-                show_firmware_version "$port"
+                show_current_config "$port"
                 ;;
             6)
+                show_firmware_version "$port"
+                ;;
+            7)
                 echo ""
                 print_step "Saliendo..."
                 exit 0

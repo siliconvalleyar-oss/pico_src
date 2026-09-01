@@ -60,19 +60,20 @@
 #define SSD1306_WIDTH      128
 #define SSD1306_I2C_ADDR   0x3C
 
-// Timebase: 128 samples at 4ms = 512ms window
-#define SAMPLE_INTERVAL_MS 4       // ~250 Hz
+// Timebase configuration
+static uint16_t scope_window_ms = 500;  // default 500ms window
+#define SCOPE_BUFFER_SIZE  128
+static uint16_t scope_buffer[SCOPE_BUFFER_SIZE];
+static uint8_t scope_index = 0;
+static bool scope_triggered = false;
+static uint16_t sample_interval_ms = 4; // dynamic: window_ms / SCOPE_BUFFER_SIZE
+
+// Display refresh interval
 #define DISPLAY_UPDATE_MS  200     // Refresh display every 200ms
 #define SERIAL_UPDATE_MS   1000    // Serial debug every 1s
 
 // Trigger configuration
 #define TRIGGER_HOLD_MS    300     // Block retrigger for 300ms
-
-// Oscilloscope buffer
-#define SCOPE_BUFFER_SIZE  128
-static uint16_t scope_buffer[SCOPE_BUFFER_SIZE];
-static uint8_t scope_index = 0;
-static bool scope_triggered = false;
 
 //====================================================================+
 // GLOBAL VARIABLES
@@ -356,6 +357,19 @@ static void process_serial_command(const char *cmd) {
         } else {
             cdc_send_string("[CFG] Error: TRIGMODE must be 0 or 1\r\n");
         }
+    } else if (strncmp(cmd, "TIME:", 5) == 0) {
+        uint16_t window_ms = (uint16_t)atoi(cmd + 5);
+        if (window_ms >= 100 && window_ms <= 5000) {
+            scope_window_ms = window_ms;
+            sample_interval_ms = scope_window_ms / SCOPE_BUFFER_SIZE;
+            if (sample_interval_ms < 1) sample_interval_ms = 1;
+            char resp[64];
+            snprintf(resp, sizeof(resp), "[CFG] Scope window set to %ums (%ums/sample)\r\n",
+                scope_window_ms, sample_interval_ms);
+            cdc_send_string(resp);
+        } else {
+            cdc_send_string("[CFG] Error: TIME must be 100-5000 ms\r\n");
+        }
     } else if (strncmp(cmd, "SCALE:", 6) == 0) {
         float scale = atof(cmd + 6);
         if (scale >= 0.1f && scale <= 100.0f) {
@@ -381,10 +395,11 @@ static void process_serial_command(const char *cmd) {
     } else if (strcmp(cmd, "GET") == 0) {
         char resp[128];
         snprintf(resp, sizeof(resp),
-            "[CFG] Trigger=%.3fV (%u ADC) | Mode=%s | Scale=%.1f | Monitor=%s | NoiseFloor=%u\r\n",
+            "[CFG] Trigger=%.3fV (%u ADC) | Mode=%s | Scale=%.1f | Window=%ums | Monitor=%s | NoiseFloor=%u\r\n",
             trigger_voltage_mv / 1000.0f, trigger_adc_level,
             trigger_mode == 0 ? "LOW" : "HIGH",
-            trigger_scale, monitor_enabled ? "ON" : "OFF", noise_floor);
+            trigger_scale, scope_window_ms,
+            monitor_enabled ? "ON" : "OFF", noise_floor);
         cdc_send_string(resp);
     }
 }
@@ -484,10 +499,14 @@ int main(void) {
     cdc_send_string("  Raspberry Pi Pico RP2040\r\n");
     cdc_send_string("========================================\r\n");
     cdc_send_string("[CFG] Default trigger: 1.700V\r\n");
-    cdc_send_string("[CFG] Commands: TRIG:1.700, SCALE:50, GET\r\n");
+    cdc_send_string("[CFG] Commands: TRIG, TRIGMODE, SCALE, TIME, MONITOR, GET, VERSION\r\n");
 
     adc_init_sensor();
     cdc_send_string("[ADC] KY-037 AO=GP27, DO=GP26 initialized\r\n");
+
+    // Initialize dynamic sample interval based on window
+    sample_interval_ms = scope_window_ms / SCOPE_BUFFER_SIZE;
+    if (sample_interval_ms < 1) sample_interval_ms = 1;
 
     i2c_init(I2C_PORT, I2C_BAUDRATE);
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
@@ -549,7 +568,7 @@ int main(void) {
         check_serial_commands();
 
         // Sample ADC at fixed interval (~250 Hz)
-        if (now - last_sample_ms >= SAMPLE_INTERVAL_MS) {
+        if (now - last_sample_ms >= sample_interval_ms) {
             last_sample_ms = now;
 
             adc_sample();
@@ -609,7 +628,7 @@ int main(void) {
                 WriteString(buf, 0, 0, line);
 
                 // Trigger level indicator (top middle)
-                snprintf(line, sizeof(line), "T:%.3fV", trigger_voltage_mv / 1000.0f);
+                snprintf(line, sizeof(line), "T:%.3fV %ums", trigger_voltage_mv / 1000.0f, scope_window_ms);
                 WriteString(buf, 42, 0, line);
 
                 // DO indicator (top right): empty square for LOW, filled for HIGH
@@ -682,8 +701,6 @@ int main(void) {
                     trigger_adc_level,
                     ky037_digital_state ? "HIGH" : "LOW ");
                 cdc_send_string(serial_buf);
-            } else {
-                cdc_send_string("[CFG] adc_oled v1.2.0\r\n");
             }
         }
     }
