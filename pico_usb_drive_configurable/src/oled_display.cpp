@@ -133,12 +133,15 @@ static void oled_send_cmd(uint8_t cmd) {
 }
 
 static void oled_send_data(const uint8_t *data, uint16_t len) {
-    uint8_t hdr[1] = { 0x40 };                    // control byte = data stream
-    i2c_write_blocking(OLED_I2C, OLED_ADDR, hdr, 1, true);
-    for (uint16_t chunk = 0; chunk < len; chunk += 16) {
-        uint16_t n = (len - chunk > 16) ? 16 : (len - chunk);
-        i2c_write_blocking(OLED_I2C, OLED_ADDR, data + chunk, n, false);
-    }
+    /* Send control byte + payload as ONE contiguous I2C transaction, exactly
+     * like the proven adc_oled SSD1306_send_buf(). Splitting the burst into
+     * many chunks risks the panel's internal column counter going out of sync
+     * (-> "snow"/noise over the whole display). */
+    static uint8_t tx[OLED_WIDTH * (OLED_HEIGHT / 8u) + 1u];
+    if (len > sizeof(tx) - 1u) len = sizeof(tx) - 1u;
+    tx[0] = 0x40;                       // control byte = data stream
+    memcpy(tx + 1, data, len);
+    i2c_write_blocking(OLED_I2C, OLED_ADDR, tx, len + 1, false);
 }
 
 /* Set column + page address range (horizontal addressing mode) and dump a
