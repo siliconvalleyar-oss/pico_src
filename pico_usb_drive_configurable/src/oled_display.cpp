@@ -128,7 +128,9 @@ static const uint8_t font5x7[][5] = {
 };
 
 static void oled_send_cmd(uint8_t cmd) {
-    uint8_t buf[2] = { 0x00, cmd };              // control byte = command stream
+    /* control byte 0x80 = command stream (same as official pico-examples
+     * SSD1306_send_cmd) */
+    uint8_t buf[2] = { 0x80, cmd };
     i2c_write_blocking(OLED_I2C, OLED_ADDR, buf, 2, false);
 }
 
