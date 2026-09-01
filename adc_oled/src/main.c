@@ -365,7 +365,7 @@ static void process_serial_command(const char *cmd) {
             cdc_send_string("[CFG] Error: use MONITOR:ON or MONITOR:OFF\r\n");
         }
     } else if (strcmp(cmd, "VERSION") == 0) {
-        cdc_send_string("[CFG] Firmware: adc_oled v1.2.0\r\n");
+        cdc_send_string("[VERSION] adc_oled v1.2.0\r\n");
     } else if (strcmp(cmd, "GET") == 0) {
         char resp[128];
         snprintf(resp, sizeof(resp),

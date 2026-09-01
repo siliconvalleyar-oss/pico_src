@@ -190,7 +190,7 @@ configure_scale() {
 
         # Normalize to 1 decimal place
         local scale_normalized
-        scale_normalized=$(printf "%.1f" "$scale_float")
+        scale_normalized=$(echo "$scale_float" | awk '{printf "%.1f", $1}')
 
         # Send command
         print_info "Enviando: SCALE:$scale_normalized"
