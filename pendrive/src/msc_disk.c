@@ -354,8 +354,6 @@ static uint32_t add_root_file(const char *name, const char *ext,
     // Date/time (fixed, near epoch)
     e[22] = 0x21; e[23] = 0x48;  // time
     e[24] = 0x60; e[25] = 0x4C;  // date
-    e[26] = 0x2F;                // starting cluster hi (0 for FAT12)
-    e[27] = 0x00;
 
     // Find a free data cluster.
     uint32_t cluster = 0;
@@ -380,10 +378,13 @@ static uint32_t add_root_file(const char *name, const char *ext,
         return 0;
     }
 
-    e[26] = (uint8_t) (cluster >> 8);
-    e[27] = (uint8_t) (cluster & 0xFFu);
-    e[20]              = (uint8_t) (cluster & 0xFFu); // high cluster words (16-bit)
-    e[21]              = (uint8_t) (cluster >> 8);
+    // 8.3 directory entry (FAT12/16):
+    //   e[20]..e[21] = FstClusHI (high cluster word) - must be 0 for FAT12/16
+    //   e[26]..e[27] = FstClusLO (low cluster word), little-endian
+    e[20] = 0x00;                       // FstClusHI hi  (unused in FAT12/16)
+    e[21] = 0x00;                       // FstClusHI lo  (unused in FAT12/16)
+    e[26] = (uint8_t) (cluster & 0xFFu);        // FstClusLO low byte
+    e[27] = (uint8_t) ((cluster >> 8) & 0xFFu); // FstClusLO high byte
     e[28] = (uint8_t) (size & 0xFFu);
     e[29] = (uint8_t) ((size >> 8) & 0xFFu);
     e[30] = (uint8_t) ((size >> 16) & 0xFFu);
