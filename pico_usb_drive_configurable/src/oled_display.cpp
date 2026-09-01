@@ -141,18 +141,18 @@ static void oled_send_data(const uint8_t *data, uint16_t len) {
     }
 }
 
-static void oled_set_cursor(uint8_t page, uint8_t col) {
-    oled_send_cmd(0xB0 + (page & 0x07));         // page start address
-    oled_send_cmd(0x00 | ((col >> 4) & 0x0F));   // column low nibble
-    oled_send_cmd(0x10 | (col & 0x0F));          // column high nibble
+/* Set column + page address range (horizontal addressing mode) and dump a
+ * linear, page-major framebuffer - the proven approach from adc_oled. */
+static void oled_set_window_addr(uint8_t start_col, uint8_t end_col,
+                                 uint8_t start_page, uint8_t end_page) {
+    oled_send_cmd(0x21); oled_send_cmd(start_col); oled_send_cmd(end_col);
+    oled_send_cmd(0x22); oled_send_cmd(start_page); oled_send_cmd(end_page);
 }
 
 static void oled_clear(void) {
     memset(fb, 0, sizeof(fb));
-    for (uint8_t page = 0; page < (OLED_HEIGHT / 8u); page++) {
-        oled_set_cursor(page, 0);
-        oled_send_data(fb[page], OLED_WIDTH);
-    }
+    oled_set_window_addr(0, OLED_WIDTH - 1, 0, OLED_HEIGHT / 8u - 1);
+    oled_send_data((const uint8_t *) fb, sizeof(fb));
 }
 
 static void oled_display_on(void)  { oled_send_cmd(OLED_DISPLAY_ON);  }
@@ -166,7 +166,7 @@ void oled_init(void) {
     gpio_pull_up(I2C_SDA_PIN);
     gpio_pull_up(I2C_SCL_PIN);
 
-    /* SSD1306 init sequence */
+    /* SSD1306 init sequence - matches the proven adc_oled 128x64 init */
     oled_send_cmd(0xAE);            // display off
     oled_send_cmd(0xD5); oled_send_cmd(0x80); // clock div
     oled_send_cmd(0xA8); oled_send_cmd(0x3F); // multiplex 1/64
@@ -175,13 +175,14 @@ void oled_init(void) {
     oled_send_cmd(0x8D); oled_send_cmd(0x14); // charge pump on
     oled_send_cmd(0x20); oled_send_cmd(0x00); // horizontal addressing mode
     oled_send_cmd(0xA1);            // segment remap
-    oled_send_cmd(0xC8);            // COM scan direction (remapped)
-    oled_send_cmd(0xDA); oled_send_cmd(0x12); // COM pins
-    oled_send_cmd(0x81); oled_send_cmd(0xCF); // contrast
+    oled_send_cmd(0xC8);            // COM output scan direction (remapped)
+    oled_send_cmd(0xDA); oled_send_cmd(0x12); // COM pins (128x64)
+    oled_send_cmd(0x81); oled_send_cmd(0xFF); // contrast
     oled_send_cmd(0xD9); oled_send_cmd(0xF1); // pre-charge
-    oled_send_cmd(0xDB); oled_send_cmd(0x40); // VCOM detect
+    oled_send_cmd(0xDB); oled_send_cmd(0x30); // VCOM deselect
     oled_send_cmd(0xA4);            // resume to RAM content
     oled_send_cmd(0xA6);            // normal (not inverted) display
+    oled_send_cmd(0x2E);            // deactivate horizontal scroll
     oled_clear();
     oled_display_on();
 }
@@ -216,10 +217,8 @@ static void fb_draw_string(int x, int y, const char *s) {
 }
 
 static void fb_flush(void) {
-    for (uint8_t page = 0; page < (OLED_HEIGHT / 8u); page++) {
-        oled_set_cursor(page, 0);
-        oled_send_data(fb[page], OLED_WIDTH);
-    }
+    oled_set_window_addr(0, OLED_WIDTH - 1, 0, OLED_HEIGHT / 8u - 1);
+    oled_send_data((const uint8_t *) fb, sizeof(fb));
 }
 
 /* --------------------------- high-level render --------------------------- */
