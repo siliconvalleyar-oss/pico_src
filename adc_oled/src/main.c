@@ -87,7 +87,8 @@ static bool oled_ok = false;
 static uint16_t trigger_voltage_mv = 1700;
 static float trigger_scale = 10.0f;
 static uint16_t trigger_adc_level = 0;
-static bool monitor_enabled = true;
+static bool monitor_enabled = false;
+static uint8_t trigger_mode = 0; // 0 = active low (falling), 1 = active high (rising)
 
 // Oscilloscope state
 static uint16_t adc_sum = 0;
@@ -344,6 +345,17 @@ static void process_serial_command(const char *cmd) {
         } else {
             cdc_send_string("[CFG] Error: voltage must be 0.000 - 3.300V\r\n");
         }
+    } else if (strncmp(cmd, "TRIGMODE:", 9) == 0) {
+        uint8_t mode = atoi(cmd + 9);
+        if (mode <= 1) {
+            trigger_mode = mode;
+            char resp[64];
+            snprintf(resp, sizeof(resp), "[CFG] Trigger mode set to %s\r\n",
+                mode == 0 ? "ACTIVE LOW (falling)" : "ACTIVE HIGH (rising)");
+            cdc_send_string(resp);
+        } else {
+            cdc_send_string("[CFG] Error: TRIGMODE must be 0 or 1\r\n");
+        }
     } else if (strncmp(cmd, "SCALE:", 6) == 0) {
         float scale = atof(cmd + 6);
         if (scale >= 0.1f && scale <= 100.0f) {
@@ -369,9 +381,10 @@ static void process_serial_command(const char *cmd) {
     } else if (strcmp(cmd, "GET") == 0) {
         char resp[128];
         snprintf(resp, sizeof(resp),
-            "[CFG] Trigger=%.3fV (%u ADC) | Scale=%.1f | Monitor=%s | NoiseFloor=%u\r\n",
-            trigger_voltage_mv / 1000.0f, trigger_adc_level, trigger_scale,
-            monitor_enabled ? "ON" : "OFF", noise_floor);
+            "[CFG] Trigger=%.3fV (%u ADC) | Mode=%s | Scale=%.1f | Monitor=%s | NoiseFloor=%u\r\n",
+            trigger_voltage_mv / 1000.0f, trigger_adc_level,
+            trigger_mode == 0 ? "LOW" : "HIGH",
+            trigger_scale, monitor_enabled ? "ON" : "OFF", noise_floor);
         cdc_send_string(resp);
     }
 }
@@ -432,14 +445,22 @@ static void adc_sample(void) {
 //=====================================================================
 
 static bool detect_trigger(uint32_t now) {
-    // Trigger fires when signal goes BELOW the configured level
-    bool below_level = current_adc_value < trigger_adc_level;
-    bool was_above = last_adc_value >= trigger_adc_level;
-    bool falling_edge = below_level && was_above;
-
+    bool trigger_event = false;
     bool armed = (now - last_trigger_ms) > TRIGGER_HOLD_MS;
 
-    if (falling_edge && armed) {
+    if (trigger_mode == 0) {
+        // Active LOW: trigger when signal falls below level
+        bool below_level = current_adc_value < trigger_adc_level;
+        bool was_above = last_adc_value >= trigger_adc_level;
+        trigger_event = below_level && was_above && armed;
+    } else {
+        // Active HIGH: trigger when signal rises above level
+        bool above_level = current_adc_value > trigger_adc_level;
+        bool was_below = last_adc_value <= trigger_adc_level;
+        trigger_event = above_level && was_below && armed;
+    }
+
+    if (trigger_event) {
         last_trigger_ms = now;
         return true;
     }
@@ -602,25 +623,34 @@ int main(void) {
                 uint8_t trace_y = 16;
                 uint8_t trace_h = 48;
 
-                // Draw waveform
+                // Draw waveform as connected lines
                 if (scope_triggered && scope_index < SCOPE_BUFFER_SIZE) {
                     // Post-trigger: show filled samples from left
-                    for (uint8_t i = 0; i < scope_index && i < SSD1306_WIDTH; i++) {
-                        uint16_t val = scope_buffer[i];
-                        uint8_t y = trace_y + trace_h - ((val * trace_h) / 4095);
-                        if (y < trace_y) y = trace_y;
-                        if (y >= trace_y + trace_h) y = trace_y + trace_h - 1;
-                        SetPixel(buf, i, y, true);
+                    for (uint8_t i = 1; i < scope_index && i < SSD1306_WIDTH; i++) {
+                        uint16_t val0 = scope_buffer[i - 1];
+                        uint16_t val1 = scope_buffer[i];
+                        uint8_t y0 = trace_y + trace_h - ((val0 * trace_h) / 4095);
+                        uint8_t y1 = trace_y + trace_h - ((val1 * trace_h) / 4095);
+                        if (y0 < trace_y) y0 = trace_y;
+                        if (y0 >= trace_y + trace_h) y0 = trace_y + trace_h - 1;
+                        if (y1 < trace_y) y1 = trace_y;
+                        if (y1 >= trace_y + trace_h) y1 = trace_y + trace_h - 1;
+                        DrawLine(buf, i - 1, y0, i, y1, true);
                     }
                 } else {
                     // Rolling buffer: show last 128 samples across 128 pixels
-                    for (uint8_t x = 0; x < SSD1306_WIDTH; x++) {
-                        uint8_t idx = (scope_index + x) % SCOPE_BUFFER_SIZE;
-                        uint16_t val = scope_buffer[idx];
-                        uint8_t y = trace_y + trace_h - ((val * trace_h) / 4095);
-                        if (y < trace_y) y = trace_y;
-                        if (y >= trace_y + trace_h) y = trace_y + trace_h - 1;
-                        SetPixel(buf, x, y, true);
+                    for (uint8_t x = 1; x < SSD1306_WIDTH; x++) {
+                        uint8_t idx0 = (scope_index + x - 1) % SCOPE_BUFFER_SIZE;
+                        uint8_t idx1 = (scope_index + x) % SCOPE_BUFFER_SIZE;
+                        uint16_t val0 = scope_buffer[idx0];
+                        uint16_t val1 = scope_buffer[idx1];
+                        uint8_t y0 = trace_y + trace_h - ((val0 * trace_h) / 4095);
+                        uint8_t y1 = trace_y + trace_h - ((val1 * trace_h) / 4095);
+                        if (y0 < trace_y) y0 = trace_y;
+                        if (y0 >= trace_y + trace_h) y0 = trace_y + trace_h - 1;
+                        if (y1 < trace_y) y1 = trace_y;
+                        if (y1 >= trace_y + trace_h) y1 = trace_y + trace_h - 1;
+                        DrawLine(buf, x - 1, y0, x, y1, true);
                     }
                 }
 

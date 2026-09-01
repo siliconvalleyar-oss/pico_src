@@ -330,6 +330,55 @@ show_firmware_version() {
     fi
 }
 
+configure_trigger_mode() {
+    local port="$1"
+
+    echo ""
+    print_info "Configurar modo de trigger"
+    echo ""
+    echo "  0 - ACTIVE LOW (por defecto): se activa cuando la señal BAJA por debajo del nivel"
+    echo "  1 - ACTIVE HIGH: se activa cuando la señal SUBE por encima del nivel"
+    echo ""
+
+    while true; do
+        read -p "Ingrese el modo de trigger (0 o 1): " mode
+
+        # Validate input
+        if [[ ! "$mode" =~ ^[0-1]$ ]]; then
+            print_error "Debe ingresar 0 (ACTIVE LOW) o 1 (ACTIVE HIGH)"
+            continue
+        fi
+
+        # Send command
+        print_info "Enviando: TRIGMODE:$mode"
+        local response=""
+        local attempts=3
+
+        for ((i=1; i<=attempts; i++)); do
+            if [[ $i -gt 1 ]]; then
+                print_info "Reintentando... ($i/$attempts)"
+                sleep 0.3
+            fi
+            response=$(send_command "$port" "TRIGMODE:$mode" 5)
+            if [[ -n "$response" ]]; then
+                break
+            fi
+        done
+
+        if [[ -n "$response" ]]; then
+            echo ""
+            print_step "Respuesta del Pico:"
+            echo "$response" | while IFS= read -r line; do
+                echo -e "  ${GREEN}>${NC} $line"
+            done
+        else
+            print_warning "No se recibió respuesta del Pico después de $attempts intentos"
+        fi
+
+        break
+    done
+}
+
 main_menu() {
     local port="$1"
 
@@ -341,9 +390,10 @@ main_menu() {
         echo ""
         echo "  1) Configurar nivel de trigger (voltaje)"
         echo "  2) Configurar escala/amplitud"
-        echo "  3) Ver configuración actual"
-        echo "  4) Ver versión del firmware"
-        echo "  5) Salir"
+        echo "  3) Configurar modo de trigger (ACTIVE LOW/HIGH)"
+        echo "  4) Ver configuración actual"
+        echo "  5) Ver versión del firmware"
+        echo "  6) Salir"
         echo ""
         read -p "Seleccione una opción: " option
 
@@ -355,12 +405,15 @@ main_menu() {
                 configure_scale "$port"
                 ;;
             3)
-                show_current_config "$port"
+                configure_trigger_mode "$port"
                 ;;
             4)
-                show_firmware_version "$port"
+                show_current_config "$port"
                 ;;
             5)
+                show_firmware_version "$port"
+                ;;
+            6)
                 echo ""
                 print_step "Saliendo..."
                 exit 0
