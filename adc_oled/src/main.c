@@ -4,15 +4,18 @@
  * Osciloscopio digital con KY-037.
  * - Izquierda arriba: voltaje ADC promedio (3 decimales)
  * - Derecha arriba: indicador digital DO (cuadrado vacío/lleno)
- * - Abajo: trazo tipo osciloscopio, 512ms de ventana
- * - Trigger por caída de señal: se dispara cuando el ADC baja
- *   por debajo del nivel configurado
- * - USB CDC para configuración de trigger y escala
+ * - Abajo: trazo tipo osciloscopio conectado, ventana de tiempo configurable
+ * - Trigger por flanco configurable (ACTIVE LOW/HIGH)
+ * - USB CDC para configuración de trigger, escala y ventana
  *
  * Comandos serial:
- *   TRIG:1.700   -> setea nivel de trigger en voltios
- *   SCALE:50     -> setea escala/amplitud (1, 10, 30, 50, 100)
- *   GET          -> muestra configuración actual
+ *   TRIG:1.700       -> setea nivel de trigger en voltios
+ *   TRIGMODE:0       -> modo trigger (0=ACTIVE LOW, 1=ACTIVE HIGH)
+ *   SCALE:30.0       -> setea escala/amplitud
+ *   TIME:2000        -> setea ventana de tiempo en ms (100-5000)
+ *   MONITOR:ON/OFF   -> habilita/deshabilita debug serial
+ *   GET              -> muestra configuración actual
+ *   VERSION          -> muestra versión del firmware
  *
  * Hardware:
  *   - KY-037 AO -> GPIO 27 (ADC1)
