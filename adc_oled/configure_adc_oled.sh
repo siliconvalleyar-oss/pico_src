@@ -68,8 +68,14 @@ send_command() {
     local cmd="$2"
     local timeout="$3"
 
-    # Configure serial port if needed
+    # Ensure serial port is configured
     stty -F "$port" 115200 raw -echo 2>/dev/null || true
+
+    # Flush any pending data
+    sleep 0.2
+    if [[ -r "$port" ]]; then
+        timeout 1 cat "$port" > /dev/null 2>/dev/null || true
+    fi
 
     # Small delay before sending
     sleep 0.1
@@ -94,27 +100,39 @@ send_command() {
         # Read available data
         if [[ -r "$port" ]]; then
             local chunk
-            chunk=$(timeout 0.5 cat "$port" 2>/dev/null || true)
+            chunk=$(timeout 0.3 cat "$port" 2>/dev/null || true)
             if [[ -n "$chunk" ]]; then
-                # Get the last non-empty line that is not [DATA]
-                while IFS= read -r line; do
-                    if [[ -n "$line" && ! "$line" =~ ^\[DATA\] ]]; then
-                        response="$line"
-                    fi
-                done <<< "$chunk"
+                # Accumulate all data
+                response="${response}${chunk}"
 
-                # If we got a non-[DATA] response, return it immediately
-                if [[ -n "$response" ]]; then
+                # Check if we have a complete CFG or VERSION response
+                if [[ "$response" =~ \[CFG\] ]] || [[ "$response" =~ \[VERSION\] ]]; then
+                    # Wait a bit more for any trailing data
+                    sleep 0.3
+                    local trailing
+                    trailing=$(timeout 0.2 cat "$port" 2>/dev/null || true)
+                    if [[ -n "$trailing" ]]; then
+                        response="${response}${trailing}"
+                    fi
                     break
                 fi
             fi
         fi
 
-        # Small sleep to avoid busy loop
         sleep 0.05
     done
 
-    echo "$response"
+    # Extract only CFG or VERSION lines
+    local filtered=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[CFG\] ]] || [[ "$line" =~ ^\[VERSION\] ]]; then
+            filtered="${filtered}${line}\n"
+        fi
+    done <<< "$response"
+
+    # Remove trailing newlines and return
+    filtered=$(echo "$filtered" | sed '/^$/d')
+    echo "$filtered"
 }
 
 configure_trigger() {
