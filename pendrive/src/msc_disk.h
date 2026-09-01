@@ -27,17 +27,18 @@ extern "C" {
 
 // CONFIGURABLE CAPACITY: number of 512-byte blocks that make up the disk.
 // The RP2040 has 264 KB of SRAM, so this RAM disk is limited by memory.
+// Reserved for code/data/stack leaves ~ 44 KB of headroom at this size.
 //
 //   blocks  -->  capacity
-//   256     -->  128 KB   (default)
-//   512     -->  256 KB
-//   128     -->  64 KB
-//   384     -->  192 KB   (do not exceed ~ 480 blocks on a stock Pico)
+//   448     -->  224 KB   (default - near the practical RAM limit)
+//   256     -->  128 KB
+//   384     -->  192 KB
+//   480     -->  240 KB   (do not exceed ~ 480 blocks on a stock Pico)
 //
 // Changing this value only redefines the disk size. The filesystem is
 // formatted automatically on boot, picking FAT12 or FAT16 as appropriate.
 #ifndef PENDISK_BLOCK_COUNT
-#define PENDISK_BLOCK_COUNT        256u
+#define PENDISK_BLOCK_COUNT        448u
 #endif
 
 // Sectors per cluster of the FAT filesystem. 1 is fine for these sizes and

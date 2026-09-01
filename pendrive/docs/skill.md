@@ -11,7 +11,7 @@ Pendrive USB realizado íntegramente con una Raspberry Pi Pico RP2040. Emula un 
 - **Lenguaje:** C (C11), C++17 en CMake
 - **SDK:** Pico SDK (CMake 3.13+)
 - **Firmware:** USB MSC (Mass Storage) + USB CDC
-- **Medio:** RAM configurable (por defecto 128 KB), volátil
+- **Medio:** RAM configurable (por defecto 224 KB), volátil
 - **Formato:** FAT12 / FAT16 (se elige automáticamente según tamaño)
 - **Versión actual:** v1.0.0
 - **Licencia:** MIT
@@ -109,10 +109,10 @@ Capacidad resultante = `PENDISK_BLOCK_COUNT × 512` bytes.
 
 | Bloques | Capacidad | Consideración |
 |---------|-----------|---------------|
-| 128 | 64 KB | Seguro |
-| 256 | 128 KB | Default |
-| 384 | 192 KB | Usa casi toda la RAM |
-| 512 | 256 KB | Máximo aproximado (~264 KB SRAM) |
+| 256 | 128 KB | Conservador |
+| 384 | 192 KB | Más espacio |
+| 448 | 224 KB | Default (recomendado) |
+| 480 | 240 KB | Máximo aproximado (~264 KB SRAM) |
 
 > ⚠️ Exceder ~480 bloques suele provocar fallo de enlazado por falta de RAM (RFC: el disco se reserva como `static` en `.bss`).
 
@@ -318,7 +318,7 @@ No se necesita `hardware_flash` ni drivers de periféricos extra; la clase MSC l
 ```c
 // === Disco (msc_disk.h) ===
 #define PENDISK_BLOCK_SIZE          512u
-#define PENDISK_BLOCK_COUNT         256u   // ← capacidad configurable
+#define PENDISK_BLOCK_COUNT         448u   // ← capacidad configurable (224 KB default)
 #define PENDISK_SECTORS_PER_CLUSTER 1u
 
 // === Geometría FAT (msc_disk.c) ===

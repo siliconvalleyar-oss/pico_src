@@ -83,7 +83,7 @@ Solamente conecta el cable Micro-B entre el Pico y la computadora.
 
 | Parámetro | Valor |
 |-----------|-------|
-| Capacidad | 128 KB (256 bloques × 512 B) |
+| Capacidad | 224 KB (448 bloques × 512 B) |
 | Formato | FAT12 / FAT16 (auto) |
 | Lectura/Escritura | Completa |
 | Persistencia | No (RAM volátil) |

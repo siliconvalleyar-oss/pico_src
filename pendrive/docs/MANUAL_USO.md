@@ -124,17 +124,17 @@ README.TXT   -> información del dispositivo
 Edita `src/msc_disk.h`:
 
 ```c
-#define PENDISK_BLOCK_COUNT     256u   // <- bloques de 512 bytes
+#define PENDISK_BLOCK_COUNT     448u   // <- bloques de 512 bytes
 ```
 
 Ejemplos:
 
 | Valores | Capacidad | Uso típico |
 |---------|-----------|------------|
-| `128u`  | 64 KB     | Notas, config |
-| `256u`  | 128 KB    | **Por defecto** |
+| `256u`  | 128 KB    | Conservador |
 | `384u`  | 192 KB    | Más espacio |
-| `512u`  | 256 KB    | Máximo en RAM |
+| `448u`  | 224 KB    | **Por defecto** |
+| `480u`  | 240 KB    | Máximo en RAM |
 
 Luego recompila y vuelve a flashear.
 
@@ -159,7 +159,7 @@ $ minicom -D /dev/ttyACM0 -b 115200
   Raspberry Pi Pico RP2040
 ========================================
 [SYS] RAM disk formatted
-[SYS] Capacity: 128 KB (256 x 512B blocks)
+[SYS] Capacity: 224 KB (448 x 512B blocks)
 [SYS] Ready. Connect USB to mount the pendrive.
 ```
 
@@ -208,7 +208,7 @@ Comandos disponibles:
 | Interfaz USB | USB 2.0 Full Speed |
 | Clase USB | Mass Storage (MSC) + CDC |
 | Formato | FAT12 / FAT16 |
-| Capacidad por defecto | 128 KB |
+| Capacidad por defecto | 224 KB |
 | Lectura/Escritura | Sí |
 | Persistencia | No (RAM volátil) |
 | Consumo típico | ~20-40 mA |

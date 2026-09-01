@@ -40,6 +40,7 @@ pico_src/pendrive/
 │   ├── HARDWARE.md
 │   ├── BUILD.md
 │   └── MANUAL_USO.md
+├── pendrive_oled_v1.3.1_224KB.uf2   # UF2 precompilado (224 KB)
 └── build/                      # Directorio de build (generado)
 ```
 
@@ -100,25 +101,30 @@ picotool reboot
 ## Verificar que Funciona
 
 1. Conecta el Pico al USB de la computadora
-2. Debería aparecer un **pendrive** con ~128 KB de espacio y un archivo `README.TXT`
+2. Debería aparecer un **pendrive** con ~224 KB de espacio y un archivo `README.TXT`
 3. Crea, copia, modifica y borra archivos normalmente
+4. Si en Linux no puedes escribir (`Sistema de archivos de solo lectura`), remonta `rw`:
+   ```bash
+   sudo mount -o remount,rw /media/$USER/<volumen>
+   ```
+   El firmware escribe correctamente; es el automontador de Linux quien monta `vfat` en `ro`.
 
 ## Configurar la Capacidad
 
 Edita `src/msc_disk.h`:
 
 ```c
-#define PENDISK_BLOCK_COUNT     256u   // <- bloques de 512 bytes
+#define PENDISK_BLOCK_COUNT     448u   // <- bloques de 512 bytes
 ```
 
 | Bloques | Capacidad | Nota |
 |---------|-----------|------|
-| 128     | 64 KB     | Seguro |
-| 256     | 128 KB    | **Por defecto** |
-| 384     | 192 KB    | Usa casi toda la RAM |
-| 512     | 256 KB    | Máximo aproximado |
+| 256     | 128 KB    | Conservador |
+| 384     | 192 KB    | Uso alto de RAM |
+| 448     | 224 KB    | **Por defecto** (recomendado) |
+| 480     | 240 KB    | Máximo aproximado |
 
-> ⚠️ La RP2040 tiene **264 KB de SRAM**. No subas los bloques en exceso o el firmware no enlazará (linker out of memory).
+> ⚠️ La RP2040 tiene **264 KB de SRAM**. No subas los bloques en exceso o el firmware no enlazará (linker out of memory). A 448 bloques el firmware usa ~228 KB de BSS, dejando ~36 KB de margen.
 
 ## Rebuild Limpio
 

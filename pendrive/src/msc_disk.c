@@ -512,7 +512,13 @@ bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, boo
 // Invoked when received READ10 command
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
     (void) lun;
+    // out of ramdisk
     if (lba >= PENDISK_BLOCK_COUNT) return -1;
+    // Check for overflow of offset + bufsize (whole-disk bounds check)
+    if ((uint64_t) lba * PENDISK_BLOCK_SIZE + offset + bufsize >
+        (uint64_t) PENDISK_BLOCK_COUNT * PENDISK_BLOCK_SIZE) {
+        return -1;
+    }
     const uint8_t* addr = msc_disk[lba] + offset;
     memcpy(buffer, addr, bufsize);
     return (int32_t) bufsize;
@@ -527,9 +533,15 @@ bool tud_msc_is_writable_cb(uint8_t lun) {
 // Invoked when received WRITE10 command
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
     (void) lun;
+    // out of ramdisk
     if (lba >= PENDISK_BLOCK_COUNT) return -1;
     if (ejected) {
         // Reject writes after a safe eject.
+        return -1;
+    }
+    // Check for overflow of offset + bufsize (whole-disk bounds check)
+    if ((uint64_t) lba * PENDISK_BLOCK_SIZE + offset + bufsize >
+        (uint64_t) PENDISK_BLOCK_COUNT * PENDISK_BLOCK_SIZE) {
         return -1;
     }
     uint8_t* addr = msc_disk[lba] + offset;
