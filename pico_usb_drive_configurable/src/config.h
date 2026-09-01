@@ -63,8 +63,8 @@
  *
  *   Allowed range : 0..28. SCL must differ from SDA.
  */
-#define I2C_SDA_PIN               4
-#define I2C_SCL_PIN               5
+#define I2C_SDA_PIN               16
+#define I2C_SCL_PIN               17
 
 /*
  * OLED_ADDR

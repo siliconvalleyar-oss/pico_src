@@ -23,8 +23,8 @@ LED.
 |-------------|---------------------|
 | VCC (3.3 V) | 3V3 (OUT) |
 | GND         | GND |
-| SCL         | GPIO 5  (I2C0 SCL) |
-| SDA         | GPIO 4  (I2C0 SDA) |
+| SCL         | GPIO 17 (I2C0 SCL) |
+| SDA         | GPIO 16 (I2C0 SDA) |
 
 Pins are configurable via `I2C_SDA_PIN` / `I2C_SCL_PIN` in `src/config.h`
 (they must be a valid hardware-I2C pair on the same I2C block).
