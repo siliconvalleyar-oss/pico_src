@@ -42,23 +42,20 @@ print_warning() {
 
 find_pico_port() {
     local port=""
-    for candidate in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyACM2; do
+    for candidate in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyACM2 /dev/ttyUSB0 /dev/ttyUSB1; do
         if [[ -e "$candidate" ]]; then
-            local usb_dev
-            usb_dev=$(readlink -f "$candidate" 2>/dev/null || echo "")
-            if [[ -n "$usb_dev" ]]; then
-                port="$candidate"
-                break
-            fi
+            port="$candidate"
+            break
         fi
     done
 
     if [[ -z "$port" ]]; then
-        print_error "No se encontró ningún puerto /dev/ttyACM0, /dev/ttyACM1 ni /dev/ttyACM2"
+        print_error "No se encontró ningún puerto serie del Pico"
         echo ""
         print_info "Verifique que el Pico esté conectado por USB"
         print_info "Puertos disponibles:"
         ls -la /dev/ttyACM* 2>/dev/null || true
+        ls -la /dev/ttyUSB* 2>/dev/null || true
         exit 1
     fi
 
@@ -70,6 +67,12 @@ send_command() {
     local port="$1"
     local cmd="$2"
     local timeout="$3"
+
+    # Configure serial port if needed
+    stty -F "$port" 115200 raw -echo 2>/dev/null || true
+
+    # Small delay before sending
+    sleep 0.1
 
     # Send command with CRLF
     printf "%s\r\n" "$cmd" > "$port" 2>/dev/null || true
@@ -91,14 +94,24 @@ send_command() {
         # Read available data
         if [[ -r "$port" ]]; then
             local chunk
-            chunk=$(timeout 0.2 cat "$port" 2>/dev/null || true)
+            chunk=$(timeout 0.5 cat "$port" 2>/dev/null || true)
             if [[ -n "$chunk" ]]; then
-                response="${response}${chunk}"
+                # Get the last non-empty line that is not [DATA]
+                while IFS= read -r line; do
+                    if [[ -n "$line" && ! "$line" =~ ^\[DATA\] ]]; then
+                        response="$line"
+                    fi
+                done <<< "$chunk"
+
+                # If we got a non-[DATA] response, return it immediately
+                if [[ -n "$response" ]]; then
+                    break
+                fi
             fi
         fi
 
         # Small sleep to avoid busy loop
-        sleep 0.1
+        sleep 0.05
     done
 
     echo "$response"
@@ -143,8 +156,19 @@ configure_trigger() {
 
         # Send command
         print_info "Enviando: TRIG:$formatted_voltage"
-        local response
-        response=$(send_command "$port" "TRIG:$formatted_voltage" 3)
+        local response=""
+        local attempts=3
+
+        for ((i=1; i<=attempts; i++)); do
+            if [[ $i -gt 1 ]]; then
+                print_info "Reintentando... ($i/$attempts)"
+                sleep 0.3
+            fi
+            response=$(send_command "$port" "TRIG:$formatted_voltage" 5)
+            if [[ -n "$response" ]]; then
+                break
+            fi
+        done
 
         if [[ -n "$response" ]]; then
             echo ""
@@ -153,7 +177,7 @@ configure_trigger() {
                 echo -e "  ${GREEN}>${NC} $line"
             done
         else
-            print_warning "No se recibió respuesta del Pico (timeout 3s)"
+            print_warning "No se recibió respuesta del Pico después de $attempts intentos"
         fi
 
         break
@@ -194,8 +218,19 @@ configure_scale() {
 
         # Send command
         print_info "Enviando: SCALE:$scale_normalized"
-        local response
-        response=$(send_command "$port" "SCALE:$scale_normalized" 3)
+        local response=""
+        local attempts=3
+
+        for ((i=1; i<=attempts; i++)); do
+            if [[ $i -gt 1 ]]; then
+                print_info "Reintentando... ($i/$attempts)"
+                sleep 0.3
+            fi
+            response=$(send_command "$port" "SCALE:$scale_normalized" 5)
+            if [[ -n "$response" ]]; then
+                break
+            fi
+        done
 
         if [[ -n "$response" ]]; then
             echo ""
@@ -204,7 +239,7 @@ configure_scale() {
                 echo -e "  ${GREEN}>${NC} $line"
             done
         else
-            print_warning "No se recibió respuesta del Pico (timeout 3s)"
+            print_warning "No se recibió respuesta del Pico después de $attempts intentos"
         fi
 
         break
@@ -218,8 +253,19 @@ show_current_config() {
     print_info "Solicitando configuración actual"
     echo ""
 
-    local response
-    response=$(send_command "$port" "GET" 3)
+    local response=""
+    local attempts=3
+
+    for ((i=1; i<=attempts; i++)); do
+        if [[ $i -gt 1 ]]; then
+            print_info "Reintentando... ($i/$attempts)"
+            sleep 0.3
+        fi
+        response=$(send_command "$port" "GET" 5)
+        if [[ -n "$response" ]]; then
+            break
+        fi
+    done
 
     if [[ -n "$response" ]]; then
         print_step "Configuración actual:"
@@ -227,7 +273,7 @@ show_current_config() {
             echo -e "  ${GREEN}>${NC} $line"
         done
     else
-        print_warning "No se recibió respuesta del Pico (timeout 3s)"
+        print_warning "No se recibió respuesta del Pico después de $attempts intentos"
     fi
 }
 
@@ -238,8 +284,22 @@ show_firmware_version() {
     print_info "Consultando versión del firmware"
     echo ""
 
-    local response
-    response=$(send_command "$port" "VERSION" 3)
+    # Try multiple times in case monitor data interferes
+    local response=""
+    local attempts=3
+
+    for ((i=1; i<=attempts; i++)); do
+        if [[ $i -gt 1 ]]; then
+            print_info "Reintentando... ($i/$attempts)"
+            sleep 0.5
+        fi
+
+        response=$(send_command "$port" "VERSION" 8)
+
+        if [[ -n "$response" ]]; then
+            break
+        fi
+    done
 
     if [[ -n "$response" ]]; then
         print_step "Versión:"
@@ -247,7 +307,8 @@ show_firmware_version() {
             echo -e "  ${GREEN}>${NC} $line"
         done
     else
-        print_warning "No se recibió respuesta del Pico (timeout 3s)"
+        print_warning "No se recibió respuesta del Pico después de $attempts intentos"
+        print_info "Verifique que el firmware esté ejecutándose correctamente"
     fi
 }
 
