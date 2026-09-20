@@ -4,3 +4,8 @@ _deps/
 *.d
 *.elf
 *.map
+
+tmp/
+olds/
+
+
