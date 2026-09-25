@@ -33,9 +33,9 @@
 //--------------------------------------------------------------------+
 // OLED SSD1306
 //--------------------------------------------------------------------+
-#define OLED_I2C_INST        i2c1
-#define OLED_SDA_PIN         2
-#define OLED_SCL_PIN         3
+#define OLED_I2C_INST        i2c0        // GP4/GP5 pertenecen a I2C0
+#define OLED_SDA_PIN         4
+#define OLED_SCL_PIN         5
 
 //--------------------------------------------------------------------+
 // USB (TinyUSB MSC)

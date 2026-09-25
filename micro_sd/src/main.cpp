@@ -23,6 +23,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
@@ -118,6 +119,9 @@ static void banner_render(void) {
         char name[FB_NAME_LEN + 1];
         strncpy(name, e->name, FB_NAME_LEN);
         name[FB_NAME_LEN] = '\0';
+        // La fuente 8x8 solo define mayusculas: sin esto los nombres con
+        // minusculas se dibujarian como espacios en blanco.
+        for (char *p = name; *p; p++) *p = (char) toupper((unsigned char) *p);
 
         int y = 17 + row * 8;
         if (e->is_dir) {
