@@ -81,21 +81,24 @@ static char const *s_string_desc_arr[] = {
     [STRID_LANGID]       = "Raspberry Pi",
     [STRID_MANUFACTURER] = USB_MANUFACTURER,
     [STRID_PRODUCT]      = USB_PRODUCT,
-    [STRID_SERIAL]       = "000001",
+    [STRID_SERIAL]       = "PICO-SD-0001",
 };
 
 uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void) langid;
     if (index == 0) {
         s_string_desc[1] = 0x0409;              // English (US)
-        s_string_desc[0] = (4 << 8) | 1;        // langid string
+        // word0 little-endian: byte0 = bLength (2 header + 2 de datos),
+        // byte1 = bDescriptorType = TUSB_DESC_STRING (3)
+        s_string_desc[0] = (uint16_t) ((TUSB_DESC_STRING << 8) | (2 + 2));
         return s_string_desc;
     }
     if (index >= 4) return NULL;
 
     uint8_t len = (uint8_t) strlen(s_string_desc_arr[index]);
     if (len > 31) len = 31;
-    s_string_desc[0] = (uint16_t) (((2 + len) << 8) | 1);
+    // bLength = 2 bytes de cabecera + 2 bytes por caracter (UTF-16LE)
+    s_string_desc[0] = (uint16_t) ((TUSB_DESC_STRING << 8) | (2 + 2 * len));
     for (uint8_t i = 0; i < len; i++) {
         s_string_desc[1 + i] = s_string_desc_arr[index][i];
     }

@@ -119,9 +119,7 @@ static void banner_render(void) {
         char name[FB_NAME_LEN + 1];
         strncpy(name, e->name, FB_NAME_LEN);
         name[FB_NAME_LEN] = '\0';
-        // La fuente 8x8 solo define mayusculas: sin esto los nombres con
-        // minusculas se dibujarian como espacios en blanco.
-        for (char *p = name; *p; p++) *p = (char) toupper((unsigned char) *p);
+        // La fuente 8x8 cubre a-z/A-Z/0-9: se respeta el caso original
 
         int y = 17 + row * 8;
 

@@ -32,11 +32,6 @@ typedef struct {
     bool     *truncated;
 } walk_ctx_t;
 
-// Convierte a mayusculas in-place (la fuente del OLED no tiene minusculas)
-static void to_upper(char *s) {
-    for (; *s; s++) *s = (char) toupper((unsigned char) *s);
-}
-
 // Orden: carpetas primero; alfabetico dentro de cada grupo
 static int cmp_fno(const FILINFO *a, const FILINFO *b) {
     bool da = (a->fattrib & AM_DIR) != 0;
@@ -87,12 +82,12 @@ static void walk_dir(const char *path, const char *prefix, int depth, walk_ctx_t
         tree_node_t *node = &s_tree.nodes[(*ctx->count)++];
 
         // Linea: prefix + ("+-" o "'-") + nombre + ("/" si carpeta)
+        // La fuente 8x8 cubre a-z/A-Z/0-9: se respeta el caso original
         snprintf(node->text, sizeof(node->text), "%s%s%.16s%s",
                  prefix,
                  last ? "'-" : "+-",
                  e->fname,
                  is_dir ? "/" : "");
-        to_upper(node->text);
         node->is_dir  = is_dir;
         node->is_last = last;
         node->size    = is_dir ? 0 : (uint32_t) e->fsize;
