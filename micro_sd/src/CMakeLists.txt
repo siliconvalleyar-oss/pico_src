@@ -1,8 +1,8 @@
 add_executable(micro_sd
-        main.cpp
+        main_tree.cpp      # vista tree (rama micro_sd_tree)
         sd_spi.c
         sd_diskio.c
-        file_browser.c
+        tree_view.c        # recorrido recursivo tipo tree
         usb_msc.c
         ssd1306.c
         )
