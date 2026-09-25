@@ -27,6 +27,10 @@
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 
+#ifdef CYW43_WL_GPIO_LED_PIN
+#include "pico/cyw43_arch.h"   // LED onboard del Pico W (via CYW43)
+#endif
+
 extern "C" {
 #include "ssd1306.h"
 #include "sd_spi.h"
@@ -58,7 +62,15 @@ static void led_set(bool on) {
 }
 
 static void led_init(void) {
-#if !defined(CYW43_WL_GPIO_LED_PIN) && !defined(PICO_DEFAULT_LED_PIN)
+#ifdef CYW43_WL_GPIO_LED_PIN
+    // Pico W: el LED va al WiFi chip; requiere init del CYW43
+    if (cyw43_arch_init() != 0) {
+        printf("aviso: cyw43_arch_init fallo; sin LED\r\n");
+    }
+#elif defined(PICO_DEFAULT_LED_PIN)
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+#else
     gpio_init(LED_PIN_FALLBACK);
     gpio_set_dir(LED_PIN_FALLBACK, GPIO_OUT);
 #endif
