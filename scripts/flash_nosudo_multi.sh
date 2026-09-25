@@ -101,6 +101,13 @@ fi
 
 PROJECT="$(basename "${PROJECT_DIR}")"
 BUILD_DIR="${PROJECT_DIR}/build"
+# El mapeo especial de config.sh (carpeta keyboard -> pico_keyboard_bridge)
+# solo aplica a SU carpeta; para cualquier otro proyecto el target CMake
+# coincide con el nombre del directorio.
+if [ -n "${PROJECT_CMAKE_TARGET:-}" ] && [ "${PROJECT_CMAKE_TARGET}" != "${PROJECT}" ] \
+   && [ "${PROJECT_DIR}" != "${REPO_ROOT}/keyboard" ]; then
+    PROJECT_CMAKE_TARGET="${PROJECT}"
+fi
 # Los binarios quedan en build/src/ porque el CMake del proyecto hace add_subdirectory(src).
 # Use PROJECT_CMAKE_TARGET if set (may differ from directory name).
 ELF_FILE="${BUILD_DIR}/src/${PROJECT_CMAKE_TARGET:-${PROJECT}}.elf"
