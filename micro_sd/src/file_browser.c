@@ -5,7 +5,9 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "ff.h"
 
@@ -14,6 +16,14 @@
 
 static fb_list_t  s_list;
 static char       s_label[16];
+
+// Carpetas primero, dentro de cada grupo alfabético (case-insensitive)
+static int cmp_entries(const void *a, const void *b) {
+    const fb_entry_t *ea = (const fb_entry_t *) a;
+    const fb_entry_t *eb = (const fb_entry_t *) b;
+    if (ea->is_dir != eb->is_dir) return ea->is_dir ? -1 : 1;
+    return strcasecmp(ea->name, eb->name);
+}
 
 bool fb_scan(void) {
     static FATFS fs;      // objeto de volumen (persistente)
@@ -57,6 +67,10 @@ bool fb_scan(void) {
         n++;
     }
     f_closedir(&dir);
+
+    // Orden tipo "ls": carpetas primero, luego archivos, alfabético
+    // (FatFS readdir devuelve las entradas en orden de asignación)
+    qsort(s_list.files, n, sizeof(fb_entry_t), cmp_entries);
 
     s_list.count = n;
     s_list.valid = true;

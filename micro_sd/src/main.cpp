@@ -124,13 +124,27 @@ static void banner_render(void) {
         for (char *p = name; *p; p++) *p = (char) toupper((unsigned char) *p);
 
         int y = 17 + row * 8;
+
         if (e->is_dir) {
-            // Carpetas: prefijo "/" + nombre
+            // Carpeta: prefijo "/" + nombre (sin tamaño)
             char dline[FB_NAME_LEN + 2];
             snprintf(dline, sizeof(dline), "/%s", name);
             ssd1306_draw_string(&oled, 0, y, dline);
         } else {
-            ssd1306_draw_string(&oled, 0, y, name);
+            // Archivo: nombre a la izquierda + tamaño legible a la derecha
+            char size[8];
+            if      (e->size >= 1024u * 1024u) snprintf(size, sizeof(size), "%luM", (unsigned long) (e->size / (1024u * 1024u)));
+            else if (e->size >= 1024u)         snprintf(size, sizeof(size), "%luK", (unsigned long) (e->size / 1024u));
+            else                               snprintf(size, sizeof(size), "%lu",  (unsigned long) e->size);
+
+            // Recortar el nombre para que no pise la columna de tamaño
+            // (2 chars de tamaño + 1 espacio => nombre max 13 chars)
+            char trunc[FB_NAME_LEN + 1];
+            snprintf(trunc, sizeof(trunc), "%-13.13s", name);
+
+            char line[24];
+            snprintf(line, sizeof(line), "%s%4s", trunc, size);
+            ssd1306_draw_string(&oled, 0, y, line);
         }
     }
 
